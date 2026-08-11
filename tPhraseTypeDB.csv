@@ -1,0 +1,83 @@
+PhraseTypeID,PhraseType,PhraseGroupID,Name,Chinese
+1,V-O,NULL,Verb-Object,動詞｜直接受詞
+2,O-V,NULL,Object-Verb,直接受詞｜動詞
+3,NPofNP,NULL,Noun-Of-Noun; Construct Chain,附屬組合詞
+4,ofNPNP,NULL,Noun-Of-Noun,附屬組合詞
+5,PrepNP,NULL,Preposition-Noun,介系詞｜名詞
+6,AdjpNP,NULL,Adjective-Noun,形容詞｜名詞
+7,NPAdjp,NULL,Noun-Adjective,名詞｜形容詞
+8,NP-Appos,NULL,Noun-Apposition,名詞｜同位語
+9,V-ADV,NULL,Verb-Adverb,動詞｜副詞
+10,ADV-V,NULL,Adverb-Verb,副詞｜動詞
+11,VerbPrep,NULL,Verb-Preposition,動詞｜介系詞
+12,NP-PP,NULL,Noun-Preposition,名詞｜介系詞
+13,VC-P,NULL,Verbal Copula-Predicate,系動詞｜謂語
+14,P-VC,NULL,Predicate-Verbal Copula,謂語｜系動詞
+15,S-V,1,Subject-Verb,主詞｜動詞
+16,V-S,1,Verb-Subject,動詞｜主詞
+17,S-VC,1,Subject-Verbal Copula,主詞｜系動詞
+18,VC-S,1,Verbal Copula-Subject,系動詞｜主詞
+19,V-O2,NULL,Verb-Second Object,動詞｜第二受詞
+20,O2-V,NULL,Second Object-Verb,第二受詞｜動詞
+21,V-IO,NULL,Verb-Indirect Object,動詞｜間接受詞
+22,IO-V,NULL,Indirect Object-Verb,間接受詞｜動詞
+23,All-NP,NULL,"Noun Modified by ""All/Every""",「每一個」／「所有的」｜名詞
+24,NPDetAdj,NULL,Noun-Article-Adjective,名詞｜帶有定冠詞之形容詞
+25,NP-All,NULL,"Noun Modified by ""All/Every""",「每一個」／「所有的」｜名詞
+26,VC-ADV,NULL,Verbal Copula-Adverb,系動詞｜副詞
+27,PrepVerb,NULL,Preposition-Verb,介系詞｜動詞
+28,PP-NP,NULL,Preposition-Noun,介系詞｜名詞
+29,S-P,1,Subject-Predicate,主詞｜謂語
+30,P-S,1,Predicate-Subject,謂語｜主詞
+31,AdvNP,NULL,Adverb-Noun,副詞｜名詞
+32,EitherOrNp,NULL,Either-Noun-Or-Noun,名詞（或）名詞
+33,NotNpButNP,NULL,Not-Noun-But-Noun,（非）名詞（乃）名詞
+34,NPAdvp,NULL,Noun-Adverb,名詞｜副詞
+35,Conj2NP,NULL,Noun-And-Noun,名詞（和）名詞
+36,VCPrep,NULL,Verbal Copula-Preposition,系動詞｜介系詞
+37,PrepVC,NULL,Preposition-Verbal Copula,介系詞｜謂語
+38,Conj2Adjp,NULL,Adjective-And-Adjective,形容詞（和）形容詞
+39,Conj2Adv,NULL,Adverb-And-Adverb,副詞（和）副詞
+40,Conj2VP,NULL,Verb-And-Verb,動詞（和）動詞
+41,NPAdjunct,NULL,Noun-Adjunct,名詞｜修飾語
+42,PreC-S,NULL,Predicate Complement-Subject,謂語補足語｜主詞
+43,PreC-V,NULL,Predicate Complement-Verb,謂語補足語｜動詞
+44,PreO-IO,NULL,Predicate with Object Suffix-Indirect Object,受詞字尾動詞｜間接受詞
+45,PreO-Prep,NULL,Predicate with Object Suffix-Preposition,受詞字尾動詞｜介系詞
+46,PreO-S,NULL,Predicate with Object Suffix-Subject,受詞字尾動詞｜主詞
+47,PreS-IO,NULL,Predicate with Subject Suffix-Indirect Object,主詞字尾動詞｜間接受詞
+48,PreS-O,NULL,Predicate with Subject Suffix-Object,主詞字尾動詞｜直接受詞
+49,S-PreC,NULL,Subject-Predicate Complement,主詞｜謂語補足語
+50,S-PreO,NULL,Subject-Predicate with Object Suffix,主詞｜受詞字尾動詞
+51,PtcO-Prep,NULL,Participle with Object Suffix-Preposition,受詞字尾分詞｜介系詞
+52,PreS-Prep,NULL,Predicate with Subject Suffix-Preposition,主詞字尾分詞｜介系詞
+54,PtcO-O,NULL,Participle with Object Suffix-Object,受詞字尾分詞｜直接受詞
+55,PtcO-S,NULL,Participle with Object Suffix-Subject,受詞字尾分詞｜主詞
+56,V-PreC,NULL,Verb-Predicate Complement,動詞｜謂語補足語
+57,PreC-O,NULL,Predicate Complement-Object,謂語補足語｜直接受詞
+58,O-PreC,NULL,Object-Predicate Complement,直接受詞 | 謂語補足語
+59,PreC-IO,NULL,Predicate Complement-Indirect Object,謂語補足語｜間接受詞
+60,IO-PreC,NULL,Indirect Object-Predicate Complement,間接受詞 | 謂語補足語
+61,Prep-PreC,NULL,Preposition-Predicate Complement,介系詞｜謂語補足語
+62,PreC-Prep,NULL,Predicate Complement-Preposition,謂語補足語｜介系詞
+63,S-PtcO,NULL,Subject-Participle with Object Suffix,主詞｜受詞字尾分詞
+66,PtcO-IO,NULL,Participle with Object Suffix-Indirect Object,受詞字尾分詞｜間接受詞
+67,IO-PtcO,NULL,Indirect Object-Participle with Object Suffix,間接受詞｜受詞字尾分詞
+68,Prep-PtcO,NULL,Preposition-Participle with Object Suffix,介系詞｜受詞字尾分詞
+69,Neg-Adjp,NULL,Negative-Adjective,否定詞｜形容詞
+70,Neg-V,NULL,Negative-Verb,否定詞｜動詞
+71,X-Neg,NULL,Word-Negative,字詞｜否定詞
+72,O-PreO,NULL,Object-Predicate with Object Suffix,直接受詞 | 受詞字尾動詞
+100,PtcpNP,NULL,Adjectival Participle-Noun,形容分詞｜名詞
+101,Np-Demo,NULL,Noun-Demonstrative,名詞｜指示代名詞
+102,V-O-Ellip,NULL,Verb-Object in Elliptical Clause,動詞｜簡略字句中之受詞
+103,Neg-X,NULL,Negative-Word,否定詞｜字詞
+109,Prep-V,NULL,Preposition-Verb,介系詞｜動詞
+110,Appo,NULL,Appositions,同位語
+111,PreX-V,NULL,Predicate Complement-Verb,謂語補足語｜動詞
+112,Demo-NP,NULL,Demonstrative-Noun,指示代名詞｜名詞
+1001,Noun-Sfx,NULL,Noun-Sfx,Noun-Sfx
+1002,PreS,NULL,Predicate with Subject Suffix,主詞字尾分詞
+1003,PrcS,NULL,Predicate Complement with Subject Suffix,主詞字尾謂語補足語
+1004,PreO,NULL,Predicate with Object Suffix,受詞字尾動詞
+1005,PtcO,NULL,Participle with Object Suffix,受詞字尾分詞

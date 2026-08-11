@@ -5,9 +5,55 @@ import os
 from pathlib import Path
 from itertools import combinations
 
+def _node_to_info(node: ET.Element) -> Dict:
+    """將節點轉換為包含 strong / word / n 的資訊字典（供 matching_nodes 使用）"""
+    m_elements = node.findall('.//m')
+    return {
+        'node': node,
+        'strong': node.get('StrongNumberX'),
+        'n': node.get('n', ''),
+        'word': m_elements[0].get('word', '') if m_elements else ''
+    }
+
+
+def _follow_head_chain(start_node: ET.Element, max_depth: int = 20) -> Dict:
+    """
+    從 start_node（帶有 Head 屬性的節點）開始，沿著 Head 屬性一路往下找出
+    真正帶有 StrongNumberX 的節點。
+
+    這是原本手動展開 8 層（start_node -> subhead -> sub2head -> ... -> sub7head）
+    的邏輯，改用迴圈實作。行為完全等價：
+      - 每一層都必須有 Head 屬性才能往下跳一層，否則視為找不到，回傳 None
+      - Head 值若超出子節點範圍（skip_count >= len(children)），視為找不到，回傳 None
+      - 只要跳到的節點帶有 StrongNumberX，就回傳該節點的資訊
+    max_depth 只是防呆用的安全上限（原本硬編碼只支援到第8層深度，
+    這裡預設放寬到 20 層，避免未來若語法樹更深時又要手動再展開一層）。
+    """
+    current = start_node
+    depth = 0
+
+    while depth < max_depth:
+        head_value = current.get('Head')
+        if not head_value:
+            return None
+
+        skip_count = int(head_value)
+        children = list(current)
+        if skip_count >= len(children):
+            return None
+
+        current = children[skip_count]
+        if current.get('StrongNumberX'):
+            return _node_to_info(current)
+
+        depth += 1
+
+    return None
+
+
 def get_node_info(node: ET.Element, category: str, index: int = 0) -> Tuple[List[str], List[str], List[str]]:
     """獲取指定Category節點的StrongNumberX、word和n值
-    
+
     Args:
         node: XML節點
         category: 要搜尋的Category值
@@ -16,219 +62,41 @@ def get_node_info(node: ET.Element, category: str, index: int = 0) -> Tuple[List
     strong_numbers = []
     words = []
     macula_ids = []
-    
+
     # 找出所有符合category的節點
     matching_nodes = []
-    
-    # 檢查當前節點是否為S或O且有Head屬性
-    # 檢查直接子節點
+
     for child in node:
-        if child.get('Cat') == category and child.get('Cat') in ['S', 'O']:
-            # 檢查子節點是否有Head屬性
-            head_value = child.get('Head')
-            if head_value:
-                # 計算要跳過的節點數
-                skip_count = int(head_value)
-                # 獲取所有子節點的子節點
-                children = list(child)
-                # 從指定位置開始查找
-                if skip_count < len(children):
-                    start_node = children[skip_count]
-                    strong_num = start_node.get('StrongNumberX')
-                    # print('S|O:', start_node.get('Rule'), strong_num, len(children), skip_count)
-                    if strong_num:
-                        matching_nodes.append({
-                            'node': start_node,
-                            'strong': strong_num,
-                            'n': start_node.get('n', ''),
-                            'word': start_node.findall('.//m')[0].get('word', '') if start_node.findall('.//m') else ''
-                        })
-                        continue
+        if child.get('Cat') != category:
+            continue
 
-                    else:
-                        # 在跳過的節點之後查找符合的資訊
-                        subhead_value = start_node.get('Head')
-                        # print('subhead', subhead_value)
-                        if subhead_value:
-                        # 計算要跳過的節點數
-                            subskip_count = int(subhead_value)
-                            # 獲取所有子節點的子節點
-                            sub_children = list(start_node)
-                            # 從指定位置開始查找
-                            if subskip_count < len(sub_children):
-                                suhstart_node = sub_children[subskip_count]
-                                strong_num = suhstart_node.get('StrongNumberX')
-                                # print('subnode', suhstart_node.get('Rule'), strong_num, subhead_value, sub_children)
-                                # 查找子節點
-                                if strong_num:
-                                        matching_nodes.append({
-                                            'node': suhstart_node,
-                                            'strong': strong_num,
-                                            'n': suhstart_node.get('n', ''),
-                                            'word': suhstart_node.findall('.//m')[0].get('word', '') if suhstart_node.findall('.//m') else ''
-                                        })
-                                        continue
-                                else:
-                                    # 在跳過的節點之後查找符合的資訊
-                                    sub2head_value = suhstart_node.get('Head')
-                                    if sub2head_value:
-                                    # 計算要跳過的節點數
-                                        sub2skip_count = int(sub2head_value)
-                                        # 獲取所有子節點的子節點
-                                        sub2_children = list(suhstart_node)
-                                        # 從指定位置開始查找
-                                        if sub2skip_count < len(sub2_children):
-                                            suh2start_node = sub2_children[sub2skip_count]
-                                            strong_num = suh2start_node.get('StrongNumberX')
-                                            # print('sub2node', suh2start_node.get('Rule'), strong_num, sub2head_value, sub2_children)
-                                            if strong_num:
-                                                matching_nodes.append({
-                                                    'node': suh2start_node,
-                                                    'strong': strong_num,
-                                                    'n': suh2start_node.get('n', ''),
-                                                    'word': suh2start_node.findall('.//m')[0].get('word', '') if suh2start_node.findall('.//m') else ''
-                                                })
-                                                continue
-                                            else:
-                                                # 在跳過的節點之後查找符合的資訊
-                                                sub3head_value = suh2start_node.get('Head')
-                                                if sub3head_value:
-                                                # 計算要跳過的節點數
-                                                    sub3skip_count = int(sub3head_value)
-                                                    # 獲取所有子節點的子節點
-                                                    sub3_children = list(suh2start_node)
-                                                    # 從指定位置開始查找
-                                                    if sub3skip_count < len(sub3_children):
-                                                        suh3start_node = sub3_children[sub3skip_count]
-                                                        strong_num = suh3start_node.get('StrongNumberX')
-                                                        # print('sub3node', suh3start_node.get('Rule'), strong_num, sub3head_value, sub3_children)
-                                                        if strong_num:
-                                                            matching_nodes.append({
-                                                                'node': suh3start_node,
-                                                                'strong': strong_num,
-                                                                'n': suh3start_node.get('n', ''),
-                                                                'word': suh3start_node.findall('.//m')[0].get('word', '') if suh3start_node.findall('.//m') else ''
-                                                            })
-                                                            continue
-                                                        else:
-                                                            # 在跳過的節點之後查找符合的資訊
-                                                            sub4head_value = suh3start_node.get('Head')
-                                                            if sub4head_value:
-                                                            # 計算要跳過的節點數
-                                                                sub4skip_count = int(sub4head_value)
-                                                                # 獲取所有子節點的子節點
-                                                                sub4_children = list(suh3start_node)
-                                                                # 從指定位置開始查找
-                                                                if sub4skip_count < len(sub4_children):
-                                                                    suh4start_node = sub4_children[sub4skip_count]
-                                                                    strong_num = suh4start_node.get('StrongNumberX')
-                                                                    # print('sub4node', suh4start_node.get('Rule'), strong_num, sub4head_value, sub4_children)
-                                                                    if strong_num:
-                                                                        matching_nodes.append({
-                                                                            'node': suh4start_node,
-                                                                            'strong': strong_num,
-                                                                            'n': suh4start_node.get('n', ''),
-                                                                            'word': suh4start_node.findall('.//m')[0].get('word', '') if suh4start_node.findall('.//m') else ''
-                                                                        })
-                                                                        continue
-                                                                    else:
-                                                                        # 在跳過的節點之後查找符合的資訊
-                                                                        sub5head_value = suh4start_node.get('Head')
-                                                                        if sub5head_value:
-                                                                        # 計算要跳過的節點數
-                                                                            sub5skip_count = int(sub5head_value)
-                                                                            # 獲取所有子節點的子節點
-                                                                            sub5_children = list(suh4start_node)
-                                                                            # 從指定位置開始查找
-                                                                            if sub5skip_count < len(sub5_children):
-                                                                                suh5start_node = sub5_children[sub5skip_count]
-                                                                                strong_num = suh5start_node.get('StrongNumberX')
-                                                                                # print('sub5node', suh5start_node.get('Rule'), strong_num, sub5head_value, sub5_children)
-                                                                                if strong_num:
-                                                                                    matching_nodes.append({
-                                                                                        'node': suh5start_node,
-                                                                                        'strong': strong_num,
-                                                                                        'n': suh5start_node.get('n', ''),
-                                                                                        'word': suh5start_node.findall('.//m')[0].get('word', '') if suh5start_node.findall('.//m') else ''
-                                                                                    })
-                                                                                    continue
-                                                                                else:
-                                                                                    # 在跳過的節點之後查找符合的資訊
-                                                                                    sub6head_value = suh5start_node.get('Head')
-                                                                                    if sub6head_value:
-                                                                                    # 計算要跳過的節點數
-                                                                                        sub6skip_count = int(sub6head_value)
-                                                                                        # 獲取所有子節點的子節點
-                                                                                        sub6_children = list(suh5start_node)
-                                                                                        # 從指定位置開始查找
-                                                                                        if sub6skip_count < len(sub6_children):
-                                                                                            suh6start_node = sub6_children[sub6skip_count]
-                                                                                            strong_num = suh6start_node.get('StrongNumberX')
-                                                                                            # print('sub6node', suh6start_node.get('Rule'), strong_num, sub6head_value, sub6_children)
-                                                                                            if strong_num:
-                                                                                                matching_nodes.append({
-                                                                                                    'node': suh6start_node,
-                                                                                                    'strong': strong_num,
-                                                                                                    'n': suh6start_node.get('n', ''),
-                                                                                                    'word': suh6start_node.findall('.//m')[0].get('word', '') if suh6start_node.findall('.//m') else ''
-                                                                                                })
-                                                                                                continue
-                                                                                            else:
-                                                                                                # 在跳過的節點之後查找符合的資訊
-                                                                                                sub7head_value = suh6start_node.get('Head')
-                                                                                                if sub7head_value:
-                                                                                                # 計算要跳過的節點數
-                                                                                                    sub7skip_count = int(sub7head_value)
-                                                                                                    # 獲取所有子節點的子節點
-                                                                                                    sub7_children = list(suh6start_node)
-                                                                                                    # 從指定位置開始查找
-                                                                                                    if sub7skip_count < len(sub7_children):
-                                                                                                        suh7start_node = sub7_children[sub7skip_count]
-                                                                                                        strong_num = suh7start_node.get('StrongNumberX')
-                                                                                                        # print('sub7node', suh7start_node.get('Rule'), strong_num, sub7head_value, sub7_children)
-                                                                                                        if strong_num:
-                                                                                                            matching_nodes.append({
-                                                                                                                'node': suh7start_node,
-                                                                                                                'strong': strong_num,
-                                                                                                                'n': suh7start_node.get('n', ''),
-                                                                                                                'word': suh7start_node.findall('.//m')[0].get('word', '') if suh7start_node.findall('.//m') else ''
-                                                                                                            })
-                                                                                                            continue
-
-        # 處理非S,O節點
-        if child.get('Cat') == category and child.get('Cat') not in ['S', 'O']:
-            # print(child.get('Cat'), category)
-            # 原有的邏輯
+        if category in ['S', 'O']:
+            # S / O 節點：需沿著 Head 屬性往下找出真正的頭詞
+            info = _follow_head_chain(child)
+            if info is not None:
+                matching_nodes.append(info)
+        else:
+            # 非 S/O 節點：先看自己是否直接有 StrongNumberX
             strong_num = child.get('StrongNumberX')
             if strong_num:
-                matching_nodes.append({
-                    'node': child,
-                    'strong': strong_num,
-                    'n': child.get('n', ''),
-                    'word': child.findall('.//m')[0].get('word', '') if child.findall('.//m') else ''
-                })
+                matching_nodes.append(_node_to_info(child))
                 continue
-            
-            # 檢查子節點
+
+            # 否則往下找第一個帶有 StrongNumberX 的子節點
             for subchild in child.findall('.//Node'):
-                strong_num = subchild.get('StrongNumberX')
-                if strong_num:
-                    matching_nodes.append({
-                        'node': subchild,
-                        'strong': strong_num,
-                        'n': subchild.get('n', ''),
-                        'word': subchild.findall('.//m')[0].get('word', '') if subchild.findall('.//m') else ''
-                    })
+                if subchild.get('StrongNumberX'):
+                    matching_nodes.append(_node_to_info(subchild))
                     break
-    
+
     # 如果找到足夠的節點且index有效
     if 0 <= index < len(matching_nodes):
         node_info = matching_nodes[index]
         strong_numbers.append(node_info['strong'])
         words.append(node_info['word'])
         macula_ids.append(node_info['n'])
-    
+
     return strong_numbers, words, macula_ids
+
 
 # def split_rule_to_pairs(rule: str) -> List[str]:
 #     """將多詞性規則拆分為兩兩一組"""
@@ -515,7 +383,7 @@ def get_phrase_info(node: ET.Element, rule: str) -> List[Dict]:
         pass
     
     else:
-        # 處理多詞性規則
+        # 處理多詞性規則, ex: V-S-O
         partsRule = rule.split('-')
         phrase_types = ['V-S', 'S-V', 'V-PP', 'PP-V', 'PP-NP', 'NP-PP', 'NP-NP', 'V-O', 'O-V', 'V-ADV', 'ADV-V', 'Neg-V', 'V-Neg',
                          'V-O2', 'O2-V', 'PP-O', 'O-PP']
@@ -683,4 +551,4 @@ def main():
         print(f"程式執行時發生錯誤: {str(e)}")
 
 if __name__ == '__main__':
-    main() 
+    main()

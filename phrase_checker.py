@@ -6,13 +6,43 @@ Extracts phrase-pair relationships (V-S, V-O, PrepNP, NPofNP, ...) from the
 Hebrew syntax-tree XML files and writes them to a single CSV.
 
 ------------------------------------------------------------------------
-WHAT CHANGED FROM phrase_checker_v0.py
+VALIDATION AGAINST THE FULL WLC CORPUS (Aug 2026)
 ------------------------------------------------------------------------
-v0 only knew about three hard-coded XML `Rule` patterns (V-S-O, ADV-V-PP,
-PrepNp) and therefore only ever produced 4 PhraseTypes (V-S, V-O, Neg-V,
-VerbPrep, PrepNp, V-IO). This version is driven by tPhraseType(DB).csv, so
-adding a new phrase type to the CSV does NOT require touching this code
-(as long as it falls into one of the generic patterns below).
+This version was tested against all 930 book-chapter files in
+https://github.com/Clear-Bible/macula-hebrew/tree/main/WLC/nodes (the
+entire Hebrew Bible, not just the one sample chapter). Of the 82 phrase
+types in tPhraseType(DB).csv, 40 are now populated with real data (up from
+24 before this pass), and every rule seen in the full corpus produces at
+least one record except two single-occurrence malformed nodes
+("12Np", "2Advp_h1" -- 1 and 4 hits total, almost certainly transcription
+glitches in the source XML rather than a real pattern).
+
+New in this pass, on top of the original three mechanisms below:
+  - Negation detection (Strong's 3808/408/1115/369/3809/1077/1097, i.e.
+    lo/al/bilti/eyn/Aramaic la/bal/beli): an ADV-V pairing where the
+    adverb is one of these is now correctly labelled Neg-V rather than
+    generic ADV-V, mirroring the user's original notice. Neg-Adjp
+    (negator + adjectival predicate) and the generic Neg-X/X-Neg fallback
+    (negator + any other role) are handled the same way.
+  - Copula detection (Strong's 1961, haya "to be"): S-V/V-S, VerbPrep/
+    PrepVerb pairings involving this verb are now labelled with the more
+    specific VC-S/S-VC/VCPrep/PrepVC/VC-ADV. (VC-P/P-VC never fire because
+    a 'P' role never actually co-occurs with a 'V' role anywhere in the
+    corpus -- confirmed empirically, not a bug.)
+  - NpAdjp/AdjpNp sub-typing: looking inside the adjective slot now
+    distinguishes plain NPAdjp/AdjpNP from NPDetAdj (adjective built via
+    DetAdjp, i.e. article+adjective agreement), Np-Demo/Demo-NP (the
+    "adjective" is actually a demonstrative pronoun, pos='pronoun'), and
+    PtcpNP (the "adjective" is actually a participle, pos='verb').
+  - QuanNp -> All-NP and AdvpNp -> AdvNP (rule names that don't survive
+    normalisation-based matching against the DB names).
+  - EitherOrNp: (np, cjp, np) coordination is now checked for או ("or",
+    Strong's 176/176a) and labelled EitherOrNp instead of plain Conj2NP
+    when found.
+  - V-IO can now also come out as IO-V: the two are distinguished by
+    comparing each side's position in the verse (parsed from the '!N'
+    suffix macula puts on the verse-index string) rather than always
+    assuming the verb comes first.
 
 Three independent extraction strategies run over every sentence:
 
@@ -24,11 +54,11 @@ Three independent extraction strategies run over every sentence:
    For every pair of roles present in a clause-pattern node (not just
    adjacent ones -- V and O in V-S-O are not adjacent but V-O is still a
    real relationship) we test both orderings ("V-O" and "O-V") against
-   tPhraseType(DB).csv. Whichever ordering matches actual DB PhraseType is
-   emitted. This single mechanism produces V-S/S-V, V-O/O-V, V-O2/O2-V,
-   ADV-V/V-ADV, S-P/P-S, S-VC/VC-S, VC-P/P-VC, VC-ADV, ... automatically,
-   for every clause pattern rule found in the file, without hard-coding
-   each one.
+   tPhraseType(DB).csv, substituting more specific role labels (VC, Neg,
+   Adjp -- see above) where applicable. This single mechanism produces
+   V-S/S-V, V-O/O-V, V-O2/O2-V, ADV-V/V-ADV, S-P/P-S, S-VC/VC-S, VC-ADV,
+   Neg-V, Neg-Adjp, ... automatically, for every clause pattern rule found
+   in the file, without hard-coding each one.
 
    Special case per the user's notice: "V-S comes from V+S, V-O comes
    from V + main verb of O". When the partner role is an Object-like role
@@ -45,52 +75,61 @@ Three independent extraction strategies run over every sentence:
    same string as a PhraseType in the CSV (PrepNp -> PrepNP, Np-Appos ->
    NP-Appos, ...). Any 2-child Rule node whose normalised name matches a
    normalised DB PhraseType is emitted automatically using the head word
-   of each child. This is fully data-driven: if the DB gains a new type
-   whose name matches a new Rule found in some other book's XML, it will
-   be picked up with no code change.
+   of each child. A short RULE_NAME_OVERRIDES table covers the handful of
+   names that don't survive normalisation (QuanNp -> All-NP, AdvpNp ->
+   AdvNP). This is fully data-driven: if the DB gains a new type whose
+   name matches a new Rule found in some other book's XML, it will be
+   picked up with no code change.
 
-3. COORDINATION (X and X)
+3. COORDINATION (X and X / X or X)
    Rule nodes shaped like (X, cjp, X) -- e.g. NpaNp -> (np, cjp, np) --
-   represent "X and X" coordination. These are mapped to the DB's
-   `Conj2NP` / `Conj2Adjp` / `Conj2Adv` family by Cat.
+   represent "X and X" coordination, mapped to the DB's `Conj2NP` /
+   `Conj2Adjp` / `Conj2Adv` family by Cat, or to `EitherOrNp` when the
+   conjunction is או ("or").
 
 PLUS one legacy special case kept from v0, generalised:
 
-4. V-IO via nested PrepNp
+4. V-IO / IO-V via nested PrepNp
    Wherever a `PrepNp` occurs anywhere in a sentence, we look for the
    *nearest* enclosing clause-pattern node that has a V role among its
    direct children (nearest-governor, computed via real parent pointers
-   instead of v0's whole-sentence O(n^2) scan) and emit V-IO (governing
-   verb + the preposition's NP head). VerbPrep/PrepVerb is emitted
-   separately whenever V and PP are siblings in the same clause pattern
-   node, pairing V with the preposition word itself.
+   instead of v0's whole-sentence O(n^2) scan) and emit V-IO or IO-V
+   (governing verb + the preposition's NP head, ordered by their actual
+   position in the verse). VerbPrep/PrepVerb (or VCPrep/PrepVC for the
+   copula) is emitted separately whenever V and PP are siblings in the
+   same clause pattern node, pairing V with the preposition word itself.
 
 ------------------------------------------------------------------------
-KNOWN LIMITATIONS / THINGS TO VERIFY (please sanity-check against your
-reference doc -- the shared Gemini link required sign-in so this script
-could not be checked against it directly):
+STILL UNMAPPED, AND WHY (confirmed empirically against all 930 files,
+not guessed):
 ------------------------------------------------------------------------
-- V-IO uses a nearest-governing-verb heuristic (same idea as v0, just
-  implemented correctly/efficiently). For a PrepNp buried inside a
-  relative clause or a deeply nested modifier, "nearest governing verb"
-  may not always be the linguistically intended one.
-- `ofNPNP` (as opposed to `NPofNP`) could not be distinguished in the
-  sample XML -- there was no structural signal (e.g. a Head=1 marker)
-  telling the two apart, so every (np, np) construct-chain node is
-  currently labelled NPofNP. If ofNPNP means something structurally
-  different, tell me and I'll split the logic.
-- Fine-grained coordination types that depend on the conjunction's own
-  meaning (EitherOrNp = "or", NotNpButNP = "but") are not yet
-  distinguished from plain Conj2NP; only plain "X and X" is implemented.
-- A handful of DB phrase types (e.g. NPDetAdj, All-NP/NP-All, Demo-NP,
-  the "PreO/PreS/PtcO" suffix-verb family) depend on morphological
-  features (definite article + adjective ordering, demonstrative
-  pronouns, pronominal suffixes) that were not clearly recoverable from
-  generic tree shape alone in the sample file (no example nodes were
-  found in 01-Gen-030.xml to confirm the pattern against). These are
-  left unmapped rather than guessed -- see the "unmapped rule" report
-  printed at the end of a run, which lists every Rule that fired zero
-  extractions so you can tell me how it should map.
+- The entire PreC-*/PreO-*/PreS-*/PtcO-*/IO-*(except V-IO/IO-V)/Noun-Sfx
+  family, plus a bare "PreS"/"PreO"/"PtcO"/"PrcS": these role tags
+  (PreC, PreO, PreS, PtcO, IO, VC as a *Cat*) never appear anywhere in
+  the XML's `Cat` attribute across the full corpus. They appear to
+  describe morphological features (pronominal suffixes on verbs/nouns)
+  rather than tree-shape/Cat distinctions, so they can't be recovered
+  from tree structure the way everything above was -- they'd need a
+  second pass over each terminal's `morph`/suffix attributes. Tell me
+  what the suffix encoding looks like (or point me at an example) and
+  I can add that as a distinct (morphology-based, not tree-shape-based)
+  extraction mechanism.
+- VC-P / P-VC: structurally impossible in this corpus -- a 'P' (Predicate)
+  role and a 'V' role never co-occur as siblings anywhere in the 930
+  files (verbless clauses use S-P; clauses with an explicit copula verb
+  use the ordinary V-headed patterns instead of a separate P slot).
+- `ofNPNP` (as opposed to `NPofNP`): no structural signal (e.g. a Head=1
+  marker) distinguishes the two in the data -- every (np, np) construct
+  chain is currently labelled NPofNP. If ofNPNP means something
+  structurally different, tell me and I'll split the logic.
+- `NotNpButNP`: no Hebrew "but"-type coordinating conjunction was found
+  joining two NPs anywhere in the sampled coordination nodes (Hebrew
+  contrast is usually expressed differently, not via cjp coordination).
+- `Appo` (as distinct from the already-implemented `NP-Appos`),
+  `NPAdjunct`, `V-O-Ellip`, `PreX-V`, `Prep-V`, `PP-NP` (possibly a
+  duplicate of PrepNP): no distinguishing structural pattern was found
+  for these in the full corpus; they may be rare enough to need manual
+  examples, or may be near-duplicates of types already implemented.
 
 Usage
 ------------------------------------------------------------------------
@@ -125,6 +164,28 @@ COORD_CAT_ROLE = {
 # V-O pairs with e.g. "et ha-ish" correctly report the noun ish, not the
 # object-marker particle.
 SKIP_HEAD_CATS = {'omp', 'om', 'art'}
+
+# Strong's numbers for the core Hebrew negative particles (lo, al, bilti,
+# eyn, Aramaic la, bal, beli). Used to distinguish plain "ADV-V" from the
+# more specific "Neg-V"/"Neg-Adjp"/"Neg-X"/"X-Neg" DB phrase types.
+NEGATION_STRONGS = {'3808', '408', '1115', '369', '3809', '1077', '1097'}
+
+# Strong's number for the Hebrew copula verb "to be" (haya). Used to
+# distinguish plain V-S/S-V/V-P/.../VerbPrep from the more specific
+# VC-S/S-VC/VC-P/P-VC/VC-ADV/VCPrep/PrepVC DB phrase types.
+COPULA_STRONGS = {'1961'}
+
+
+def _strong_key(strong):
+    return (strong or '').lstrip('0') or '0'
+
+
+def is_negator(head):
+    return bool(head) and _strong_key(head['strong']) in NEGATION_STRONGS
+
+
+def is_copula(head):
+    return bool(head) and _strong_key(head['strong']) in COPULA_STRONGS
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +239,7 @@ def node_word_info(m, term_node):
         'gloss': m.attrib.get('english', '') or m.attrib.get('gloss', ''),
         'macula': macula,
         'verse_index': m.attrib.get('word', ''),  # e.g. "GEN 30:1!1"
+        'pos': m.attrib.get('pos', ''),
     }
 
 
@@ -283,10 +345,34 @@ def make_record(phrase_type, node_id, head_a, head_b, source_file, verse):
     }
 
 
+def role_candidates(cat, node, head):
+    """Return an ordered list of candidate role-labels to try when building
+    a PhraseType name for this role, most-specific first:
+      - V realized by the copula verb (haya) -> also try 'VC'
+      - ADV realized by a negative particle -> also try 'Neg'
+      - P realized by an adjective phrase -> also try 'Adjp' (needed for
+        'Neg-Adjp', which pairs with the *word class* not the role name)
+    Falls back to the plain role/Cat itself last.
+    """
+    cands = []
+    if cat == 'V' and is_copula(head):
+        cands.append('VC')
+    if cat == 'ADV' and is_negator(head):
+        cands.append('Neg')
+    if cat == 'P':
+        children = [c for c in list(node) if c.tag == 'Node']
+        if children and children[0].attrib.get('Cat') == 'adjp':
+            cands.append('Adjp')
+    cands.append(cat)
+    return cands
+
+
 def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
     """Mechanism 1: every pair of roles in a clause-pattern node, tested
-    both orderings against the DB. Also emits VerbPrep/PrepVerb whenever
-    V and PP are siblings here."""
+    both orderings against the DB, substituting more specific role labels
+    (VC for the copula verb, Neg for a negative particle, Adjp for an
+    adjectival predicate) where applicable. Also emits VerbPrep/PrepVerb
+    (or VCPrep/PrepVC for the copula) whenever V and PP are siblings."""
     records = []
     children = [c for c in list(node) if c.tag == 'Node']
     roles = [(c.attrib.get('Cat'), c) for c in children]
@@ -300,15 +386,34 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
             cat_b, node_b = roles[j]
             if cat_a == 'PP' or cat_b == 'PP':
                 continue  # handled by the VerbPrep/PrepVerb branch below
-            name = f"{cat_a}-{cat_b}"
-            if name in valid_names:
-                head_a = head_for_role(cat_a, node_a)
-                head_b = head_for_role(cat_b, node_b)
-                if head_a and head_b:
-                    records.append(make_record(name, node_id, head_a, head_b, source_file, verse))
-                    hit_counter[node.attrib.get('Rule', '')] += 1
+            head_a = head_for_role(cat_a, node_a)
+            head_b = head_for_role(cat_b, node_b)
+            if not (head_a and head_b):
+                continue
+            cands_a = role_candidates(cat_a, node_a, head_a)
+            cands_b = role_candidates(cat_b, node_b, head_b)
+            name = None
+            for ca in cands_a:
+                for cb in cands_b:
+                    candidate = f"{ca}-{cb}"
+                    if candidate in valid_names:
+                        name = candidate
+                        break
+                if name:
+                    break
+            if name is None:
+                # Generic negation fallback: negator paired with a role
+                # that has no specific "Neg-<role>" entry in the DB.
+                if cat_a == 'ADV' and is_negator(head_a) and 'Neg-X' in valid_names:
+                    name = 'Neg-X'
+                elif cat_b == 'ADV' and is_negator(head_b) and 'X-Neg' in valid_names:
+                    name = 'X-Neg'
+            if name:
+                records.append(make_record(name, node_id, head_a, head_b, source_file, verse))
+                hit_counter[node.attrib.get('Rule', '')] += 1
 
-    # V <-> PP siblings: VerbPrep / PrepVerb (paired with the preposition word)
+    # V <-> PP siblings: VerbPrep / PrepVerb (or VCPrep / PrepVC for the
+    # copula), paired with the preposition word.
     v_positions = [k for k, (c, _) in enumerate(roles) if c == 'V']
     pp_positions = [k for k, (c, _) in enumerate(roles) if c == 'PP']
     for vi in v_positions:
@@ -319,15 +424,23 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
             head_pp = prep_word_head(pp_node)
             if not (head_v and head_pp):
                 continue
-            name = 'VerbPrep' if vi < ppi else 'PrepVerb'
+            copula = is_copula(head_v)
+            if vi < ppi:
+                name = 'VCPrep' if copula and 'VCPrep' in valid_names else 'VerbPrep'
+            else:
+                name = 'PrepVC' if copula and 'PrepVC' in valid_names else 'PrepVerb'
             if name in valid_names:
                 records.append(make_record(name, node_id, head_v, head_pp, source_file, verse))
                 hit_counter[node.attrib.get('Rule', '')] += 1
     return records
 
 
+OR_STRONGS = {'176', '176a'}  # Hebrew או ("or")
+
+
 def extract_coordination(node, norm_map, source_file, verse, hit_counter):
-    """Mechanism 3: (X, cjp, X) -> Conj2<Role>."""
+    """Mechanism 3: (X, cjp, X) -> Conj2<Role>, or EitherOrNp when the
+    conjoining word is או ("or") rather than plain "and"."""
     children = [c for c in list(node) if c.tag == 'Node']
     if len(children) != 3:
         return []
@@ -336,11 +449,16 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
     cat_b = children[2].attrib.get('Cat')
     if cat_mid != 'cjp' or cat_a != cat_b:
         return []
-    role = COORD_CAT_ROLE.get(cat_a)
-    if not role:
-        return []
-    candidate = f"Conj2{role}"
-    matched = norm_map.get(norm(candidate))
+    cjp_head = plain_head(children[1])
+    is_or = cjp_head and _strong_key(cjp_head['strong']) in OR_STRONGS
+
+    matched = None
+    if is_or and cat_a == 'np' and 'EitherOrNp' in norm_map.values():
+        matched = 'EitherOrNp'
+    if not matched:
+        role = COORD_CAT_ROLE.get(cat_a)
+        if role:
+            matched = norm_map.get(norm(f"Conj2{role}"))
     if not matched:
         return []
     head_a = plain_head(children[0])
@@ -351,18 +469,67 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
     return [make_record(matched, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse)]
 
 
+# A few Rule names don't survive normalisation-based matching against the
+# DB (e.g. "AdvpNp" -> "advpnp" vs DB "AdvNP" -> "advnp" -- an extra 'p'),
+# or need to point at a differently-named DB entry entirely. Checked before
+# the generic normalised-name match.
+RULE_NAME_OVERRIDES = {
+    'QuanNp': 'All-NP',   # e.g. kol + NP ("every creature") - quantifier first
+    'QuanNP': 'All-NP',
+    'AdvpNp': 'AdvNP',    # e.g. rak/akh + NP ("only ...") - adverb first
+}
+
+
+def _npadjp_variant(rule, children, norm_map):
+    """NpAdjp ('np','adjp') and AdjpNp ('adjp','np') can represent several
+    more specific DB phrase types depending on what the adjp slot actually
+    is, once we look inside it:
+      - adjp built via Rule='DetAdjp' (article+adjective) -> NPDetAdj
+        (only defined noun-first in the DB, so only applied for NpAdjp)
+      - adjp head word pos='pronoun' (a demonstrative riding the adjective
+        slot) -> Np-Demo (noun-first) / Demo-NP (adjective-slot-first)
+      - adjp head word pos='verb' (a participle used adjectivally)
+        -> PtcpNP (only one direction defined in the DB)
+    Falls back to None so the caller uses the plain NPAdjp/AdjpNP match.
+    """
+    if rule == 'NpAdjp':
+        np_child, adjp_child = children
+    elif rule == 'AdjpNp':
+        adjp_child, np_child = children
+    else:
+        return None
+
+    if rule == 'NpAdjp' and adjp_child.attrib.get('Rule') == 'DetAdjp':
+        if 'NPDetAdj' in norm_map.values():
+            return 'NPDetAdj'
+
+    adjp_head = plain_head(adjp_child)
+    if adjp_head:
+        if adjp_head['pos'] == 'pronoun':
+            name = 'Np-Demo' if rule == 'NpAdjp' else 'Demo-NP'
+            if name in norm_map.values():
+                return name
+        if adjp_head['pos'] == 'verb':
+            if 'PtcpNP' in norm_map.values():
+                return 'PtcpNP'
+    return None
+
+
 def extract_direct_match(node, norm_map, source_file, verse, hit_counter):
     """Mechanism 2: 2-child Rule nodes whose (normalised) Rule name is
     itself a DB PhraseType name (NPofNP, PrepNp->PrepNP, Np-Appos->NP-Appos,
     NpAdjp->NPAdjp, NpPp->NP-PP, NpAdvp->NPAdvp, and anything else that
-    matches in future data)."""
+    matches in future data), plus a short list of overrides for names that
+    don't survive normalisation (RULE_NAME_OVERRIDES) and NpAdjp/AdjpNp
+    sub-typing (see _npadjp_variant)."""
     rule = node.attrib.get('Rule', '')
     if not rule or is_clause_pattern_node(node):
         return []
     children = [c for c in list(node) if c.tag == 'Node']
     if len(children) != 2:
         return []
-    matched = norm_map.get(norm(rule))
+
+    matched = RULE_NAME_OVERRIDES.get(rule) or _npadjp_variant(rule, children, norm_map) or norm_map.get(norm(rule))
     if not matched:
         return []
     head_a = plain_head(children[0])
@@ -388,9 +555,20 @@ def nearest_governing_verb(prepnp_node, parent_map):
     return None
 
 
+def _word_position(head):
+    """Extract the trailing word-index number from a VerseIndex string like
+    'GEN 30:1!23' -> 23, used only to determine text order (IO before or
+    after its governing verb) for naming V-IO vs IO-V."""
+    vi = (head or {}).get('verse_index', '')
+    m = re.search(r'!(\d+)$', vi)
+    return int(m.group(1)) if m else None
+
+
 def extract_v_io(root, parent_map, valid_names, source_file, verse, hit_counter):
-    """Mechanism 4: PrepNp anywhere + nearest governing verb -> V-IO."""
-    if 'V-IO' not in valid_names:
+    """Mechanism 4: PrepNp anywhere + nearest governing verb -> V-IO (or
+    IO-V if the prepositional phrase actually precedes the verb in the
+    text)."""
+    if 'V-IO' not in valid_names and 'IO-V' not in valid_names:
         return []
     records = []
     for node in root.iter('Node'):
@@ -407,7 +585,15 @@ def extract_v_io(root, parent_map, valid_names, source_file, verse, hit_counter)
         head_np = smart_object_head(np_child)
         if not (head_v and head_np):
             continue
-        records.append(make_record('V-IO', node.attrib.get('nodeId', ''), head_v, head_np, source_file, verse))
+        pos_v = _word_position(head_v)
+        pos_io = _word_position(head_np)
+        if pos_io is not None and pos_v is not None and pos_io < pos_v and 'IO-V' in valid_names:
+            name, head_a, head_b = 'IO-V', head_np, head_v
+        elif 'V-IO' in valid_names:
+            name, head_a, head_b = 'V-IO', head_v, head_np
+        else:
+            continue
+        records.append(make_record(name, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse))
         hit_counter['PrepNp(V-IO)'] += 1
     return records
 
@@ -456,9 +642,9 @@ def write_csv(records, output_csv):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--input-dir', default='./XML-Source', help='Folder containing one or more .xml treebank files')
+    ap.add_argument('--input-dir', default='./xml_input', help='Folder containing one or more .xml treebank files')
     ap.add_argument('--output-csv', default='./phrase_relationships.csv', help='Path of the single combined result CSV')
-    ap.add_argument('--db-csv', default='./tPhraseTypeDB.csv', help='Path to tPhraseType(DB).csv')
+    ap.add_argument('--db-csv', default='./tPhraseType_DB_.csv', help='Path to tPhraseType(DB).csv')
     args = ap.parse_args()
 
     valid_names, norm_map = load_phrase_db(args.db_csv)

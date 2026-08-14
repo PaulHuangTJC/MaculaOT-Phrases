@@ -284,23 +284,81 @@ def find_descendant_by_cat(node, cat, skip_cats=None):
     return None
 
 
+def head_word(node, skip_cats=None):
+    """Head word for ANY sub-tree, found by following the tree's own
+    `Head` attribute at every branching level, instead of just grabbing
+    the first terminal in document order.
+
+    Every multi-child Node in this treebank carries a `Head` attribute
+    that is the 0-based index of the child that is the linguistic head
+    of that node -- e.g. Cat="S" Rule="Np2S" Head="0" has one child, but
+    Cat="np" Rule="cjpNp" Head="1" has children (cjp, np) and Head="1"
+    tells us the *second* child (the np) is the head, not the cjp/adverb
+    ("gam", "also") sitting in front of it. Likewise DetNP (art, np) has
+    Head="1" (skip the article), ObjMarker (omp, np) has Head="1" (skip
+    the object marker), and the N-ary coordination rules (Conj3Np,
+    Conj5Np, ...) point Head at the *last* conjunct.
+
+    This is what v0/v1 got wrong for clause-level S/O/... roles whose
+    own sub-tree happens to start with a conjunction/particle/adjunct
+    node: a plain "first <m> in document order" walk (the old
+    first_m_in_subtree) picks up that leading function word instead of
+    the real head noun. Following Head fixes it structurally, for every
+    role, not just S.
+
+    skip_cats is kept as a defensive fallback only, for the rare case a
+    Head index is missing/out-of-range/malformed in the source XML; in
+    that situation we prefer a child whose Cat isn't a known function-word
+    Cat (object markers, articles) over blindly taking child 0.
+    """
+    skip_cats = skip_cats or set()
+    # direct terminal: this Node wraps an <m> directly.
+    for child in list(node):
+        if child.tag == 'm':
+            return node_word_info(child, node)
+
+    children = [c for c in list(node) if c.tag == 'Node']
+    if not children:
+        return None
+    if len(children) == 1:
+        return head_word(children[0], skip_cats)
+
+    head_attr = node.attrib.get('Head')
+    idx = None
+    if head_attr is not None:
+        try:
+            idx = int(head_attr)
+        except ValueError:
+            idx = None
+
+    chosen = None
+    if idx is not None and 0 <= idx < len(children) and children[idx].attrib.get('Cat') not in skip_cats:
+        chosen = children[idx]
+    if chosen is None:
+        chosen = next((c for c in children if c.attrib.get('Cat') not in skip_cats), children[0])
+    return head_word(chosen, skip_cats)
+
+
 def smart_object_head(node):
     """Head word for an O/O2-type role: if the role's own sub-tree embeds
     a clause (i.e. contains a nested Cat='V'), use that embedded verb's
     head (the object is itself a verbal complement clause). Otherwise use
-    the object's own head noun, skipping object-marker / article particles."""
+    the object's own head noun, following the tree's Head attribute
+    (falling back to skipping object-marker / article particles only if
+    Head is missing/malformed)."""
     embedded_v = find_descendant_by_cat(node, 'V')
     if embedded_v is not None:
-        head = first_m_in_subtree(embedded_v)
+        head = head_word(embedded_v, skip_cats=SKIP_HEAD_CATS)
         if head:
             return head
-    return first_m_in_subtree(node, skip_cats=SKIP_HEAD_CATS)
+    return head_word(node, skip_cats=SKIP_HEAD_CATS)
 
 
 def plain_head(node):
-    """Head word for a role that isn't object-like: skip function-word
-    sub-trees (article/object-marker) but don't hunt for embedded verbs."""
-    return first_m_in_subtree(node, skip_cats=SKIP_HEAD_CATS)
+    """Head word for a role that isn't object-like: follow the tree's
+    Head attribute down to the real head word (falling back to skipping
+    function-word sub-trees only if Head is missing/malformed)."""
+    return head_word(node, skip_cats=SKIP_HEAD_CATS)
 
 
 def prep_word_head(pp_or_prepnp_node):
@@ -380,9 +438,7 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
 
     for i in range(len(roles)):
         cat_a, node_a = roles[i]
-        for j in range(len(roles)):
-            if i == j:
-                continue
+        for j in range(i + 1, len(roles)):
             cat_b, node_b = roles[j]
             if cat_a == 'PP' or cat_b == 'PP':
                 continue  # handled by the VerbPrep/PrepVerb branch below
@@ -440,33 +496,59 @@ OR_STRONGS = {'176', '176a'}  # Hebrew או ("or")
 
 def extract_coordination(node, norm_map, source_file, verse, hit_counter):
     """Mechanism 3: (X, cjp, X) -> Conj2<Role>, or EitherOrNp when the
-    conjoining word is או ("or") rather than plain "and"."""
-    children = [c for c in list(node) if c.tag == 'Node']
-    if len(children) != 3:
-        return []
-    cat_a = children[0].attrib.get('Cat')
-    cat_mid = children[1].attrib.get('Cat')
-    cat_b = children[2].attrib.get('Cat')
-    if cat_mid != 'cjp' or cat_a != cat_b:
-        return []
-    cjp_head = plain_head(children[1])
-    is_or = cjp_head and _strong_key(cjp_head['strong']) in OR_STRONGS
+    conjoining word is או ("or") rather than plain "and".
 
-    matched = None
-    if is_or and cat_a == 'np' and 'EitherOrNp' in norm_map.values():
-        matched = 'EitherOrNp'
-    if not matched:
-        role = COORD_CAT_ROLE.get(cat_a)
-        if role:
+    Generalised to N-ary coordination chains: (X, cjp, X, cjp, X, ...).
+    Rule names like Conj3Np, Conj4Np, Conj5Np, ... (the number = how many
+    X's are chained) all share this same (cat, cjp, cat, cjp, cat, ...)
+    shape -- an odd number of children, alternating the same Cat on every
+    even position and 'cjp' on every odd position. Since the DB only
+    defines the pairwise Conj2<Role> family (there's no Conj3NP/Conj4NP
+    entry), a 3+-way chain is emitted as one Conj2<Role> (or EitherOrNp)
+    record per adjacent (X, cjp, X) link, e.g. Conj3Np "A ve-B ve-C"
+    produces two records: A-B and B-C. This is driven entirely by tree
+    shape, not by the literal Rule name, so it also covers any future
+    ConjNAdjp/ConjNAdvp/ConjNVP chain the corpus might contain."""
+    children = [c for c in list(node) if c.tag == 'Node']
+    if len(children) < 3 or len(children) % 2 == 0:
+        return []
+    cat_main = children[0].attrib.get('Cat')
+    if not cat_main:
+        return []
+    for k, c in enumerate(children):
+        expected_cat = cat_main if k % 2 == 0 else 'cjp'
+        if c.attrib.get('Cat') != expected_cat:
+            return []
+
+    role = COORD_CAT_ROLE.get(cat_main)
+    if not role:
+        return []
+
+    records = []
+    conjunct_positions = list(range(0, len(children), 2))
+    for k in range(len(conjunct_positions) - 1):
+        left = children[conjunct_positions[k]]
+        cjp_node = children[conjunct_positions[k] + 1]
+        right = children[conjunct_positions[k + 1]]
+
+        cjp_head = plain_head(cjp_node)
+        is_or = cjp_head and _strong_key(cjp_head['strong']) in OR_STRONGS
+
+        matched = None
+        if is_or and cat_main == 'np' and 'EitherOrNp' in norm_map.values():
+            matched = 'EitherOrNp'
+        if not matched:
             matched = norm_map.get(norm(f"Conj2{role}"))
-    if not matched:
-        return []
-    head_a = plain_head(children[0])
-    head_b = plain_head(children[2])
-    if not (head_a and head_b):
-        return []
-    hit_counter[node.attrib.get('Rule', '')] += 1
-    return [make_record(matched, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse)]
+        if not matched:
+            continue
+
+        head_a = plain_head(left)
+        head_b = plain_head(right)
+        if not (head_a and head_b):
+            continue
+        hit_counter[node.attrib.get('Rule', '')] += 1
+        records.append(make_record(matched, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse))
+    return records
 
 
 # A few Rule names don't survive normalisation-based matching against the

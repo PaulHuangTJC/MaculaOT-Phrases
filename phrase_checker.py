@@ -197,9 +197,11 @@ def norm(s):
 
 
 def load_phrase_db(db_csv_path):
-    """Returns (valid_names set, {normalised_name: canonical_PhraseType})."""
+    """Returns (valid_names set, {normalised_name: canonical_PhraseType},
+    ordered list of DB row dicts with PhraseType/Name/Chinese/PhraseTypeID)."""
     valid = set()
     norm_map = {}
+    db_rows = []
     with open(db_csv_path, encoding='utf-8-sig') as f:
         for row in csv.DictReader(f):
             pt = row['PhraseType'].strip()
@@ -207,7 +209,13 @@ def load_phrase_db(db_csv_path):
                 continue
             valid.add(pt)
             norm_map[norm(pt)] = pt
-    return valid, norm_map
+            db_rows.append({
+                'PhraseTypeID': (row.get('PhraseTypeID') or '').strip(),
+                'PhraseType': pt,
+                'Name': (row.get('Name') or '').strip(),
+                'Chinese': (row.get('Chinese') or '').strip(),
+            })
+    return valid, norm_map, db_rows
 
 
 # --------------------------------------------------------------------------
@@ -389,18 +397,26 @@ def head_for_role(cat, role_node):
     return plain_head(role_node)
 
 
-def make_record(phrase_type, node_id, head_a, head_b, source_file, verse):
+def make_record_multi(phrase_type, node_id, heads, source_file, verse):
+    """Like make_record, but for an arbitrary number (>=2) of head words --
+    used by the clause-level structural (Feature 1) and full-coordination
+    (Feature 2) extractors, which report every child/conjunct in one row
+    instead of just a single A/B pair."""
     return {
         'PhraseType': phrase_type,
         'ParentNodeID': node_id,
-        'StrongIDs': f"{head_a['strong']} | {head_b['strong']}",
-        'Words': f"{head_a['word']} | {head_b['word']}",
-        'Gloss': f"{head_a['gloss']} | {head_b['gloss']}",
-        'MaculaID': f"{head_a['macula']} | {head_b['macula']}",
-        'VerseIndex': f"{head_a['verse_index']} | {head_b['verse_index']}",
+        'StrongIDs': ' | '.join(h['strong'] for h in heads),
+        'Words': ' | '.join(h['word'] for h in heads),
+        'Gloss': ' | '.join(h['gloss'] for h in heads),
+        'MaculaID': ' | '.join(h['macula'] for h in heads),
+        'VerseIndex': ' | '.join(h['verse_index'] for h in heads),
         'SourceFile': source_file,
         'Verse': verse,
     }
+
+
+def make_record(phrase_type, node_id, head_a, head_b, source_file, verse):
+    return make_record_multi(phrase_type, node_id, [head_a, head_b], source_file, verse)
 
 
 def role_candidates(cat, node, head):
@@ -491,7 +507,120 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
     return records
 
 
+def extract_clause_full(node, source_file, verse, hit_counter):
+    """Feature 1: Clause-Level Structural phrase extraction.
+
+    For every clause-pattern node (Rule is a dash-joined list of role tags
+    that matches the Cat of each direct child in order -- see
+    is_clause_pattern_node) with 3 or more roles, emit ONE record whose
+    PhraseType is the *literal Rule string itself* (e.g. "V-PP-O",
+    "V-S-O-PP-PP-PP"), and whose MaculaID/Words/Gloss/StrongIDs/VerseIndex
+    columns list the head word of every child role, in tree order, joined
+    with " | " -- e.g. Rule="V-PP-O" -> MaculaID
+    "<head of V> | <head of PP> | <head of O>".
+
+    This is independent of tPhraseType(DB).csv (the Rule string is used
+    as-is), and independent of / additional to extract_clause_pairs's
+    pairwise DB-matched output -- both run on the same node.
+
+    2-role clauses (V-S, V-O, ...) are skipped here because
+    extract_clause_pairs already reports them (as a DB-matched pair with
+    exactly the same two heads); starting at 3 avoids emitting a
+    near-duplicate row for every simple two-role clause.
+    """
+    children = [c for c in list(node) if c.tag == 'Node']
+    if len(children) < 3:
+        return []
+    rule = node.attrib.get('Rule', '')
+    heads = []
+    for c in children:
+        h = head_for_role(c.attrib.get('Cat'), c)
+        if not h:
+            return []  # any missing head word aborts the whole-clause row
+        heads.append(h)
+    hit_counter[f"[clause-full] {rule}"] += 1
+    return [make_record_multi(rule, node.attrib.get('nodeId', ''), heads, source_file, verse)]
+
+
 OR_STRONGS = {'176', '176a'}  # Hebrew או ("or")
+
+
+def _coordination_conjuncts(node):
+    """If `node` has the (X, cjp, X, cjp, X, ...) coordination shape (odd
+    number of children >= 3, alternating the same Cat on every even
+    position and 'cjp' on every odd position -- Conj2Np, Conj3Np, Conj5Np,
+    Conj4Adjp, ...), return the list of conjunct child Nodes (the X's,
+    skipping the 'cjp' nodes). Otherwise return None. Shared by
+    extract_coordination (Mechanism 3, pairwise DB-matched output) and
+    extract_coordination_full (Feature 2, one whole-chain row)."""
+    children = [c for c in list(node) if c.tag == 'Node']
+    if len(children) < 3 or len(children) % 2 == 0:
+        return None
+    cat_main = children[0].attrib.get('Cat')
+    if not cat_main:
+        return None
+    for k, c in enumerate(children):
+        expected_cat = cat_main if k % 2 == 0 else 'cjp'
+        if c.attrib.get('Cat') != expected_cat:
+            return None
+    return [children[k] for k in range(0, len(children), 2)]
+
+
+def extract_coordination_full(node, source_file, verse, hit_counter):
+    """Feature 2: full N-ary coordination extraction.
+
+    For every coordination-chain node (Rule="Conj3Np", "Conj5Np",
+    "Conj4Adjp", ... -- see _coordination_conjuncts), emit ONE record
+    whose PhraseType is the *literal Rule string itself* and whose
+    MaculaID/Words/Gloss/StrongIDs/VerseIndex columns list the head word
+    of every conjunct (i.e. every X, skipping the 'cjp' conjunction nodes
+    themselves), in order, joined with " | " -- e.g. Rule="Conj5Np" with
+    5 noun conjuncts -> MaculaID "<n1> | <n2> | <n3> | <n4> | <n5>";
+    Rule="Conj4Adjp" with 4 adjective conjuncts -> the 4 adjective heads.
+
+    This is independent of tPhraseType(DB).csv (the Rule string is used
+    as-is), and independent of / additional to extract_coordination's
+    pairwise Conj2<Role>-per-adjacent-link output -- both run on the same
+    node. Applies to 2-conjunct chains (Conj2Np, ...) too, in which case
+    this row duplicates the single pairwise record extract_coordination
+    already produces (same two heads) -- harmless, kept for uniformity."""
+    conjuncts = _coordination_conjuncts(node)
+    if not conjuncts:
+        return []
+    heads = [plain_head(c) for c in conjuncts]
+    if not all(heads):
+        return []
+    phrase_type = _coord_full_phrase_type(node, conjuncts)
+    if not phrase_type:
+        return []
+    hit_counter[f"[coord-full] {phrase_type}"] += 1
+    return [make_record_multi(phrase_type, node.attrib.get('nodeId', ''), heads, source_file, verse)]
+
+
+def _coord_full_phrase_type(node, conjuncts):
+    """PhraseType for a full-coordination row: the node's Rule if present,
+    otherwise a name synthesised from the conjunct Cat (so sentence-level
+    (CL, cjp, CL) chains with an empty Rule still show up as CLaCL / Conj3CL
+    instead of a blank PhraseType)."""
+    rule = (node.attrib.get('Rule') or '').strip()
+    if rule:
+        return rule
+    n = len(conjuncts)
+    cat = conjuncts[0].attrib.get('Cat') or ''
+    aliases = {
+        'CL': ('CLaCL', 'Conj{n}CL'),
+        'pp': ('PPandPP', 'Conj{n}Pp'),
+        'PP': ('PPandPP', 'Conj{n}Pp'),
+        'np': ('NpaNp', 'Conj{n}Np'),
+        'adjp': ('AdjpaAdjp', 'Conj{n}Adjp'),
+        'advp': ('AdvpaAdvp', 'Conj{n}Advp'),
+        'vp': ('VPaVP', 'Conj{n}VP'),
+    }
+    pair = aliases.get(cat)
+    if not pair:
+        return ''
+    two, many = pair
+    return two if n == 2 else many.format(n=n)
 
 
 def extract_coordination(node, norm_map, source_file, verse, hit_counter):
@@ -509,16 +638,11 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
     produces two records: A-B and B-C. This is driven entirely by tree
     shape, not by the literal Rule name, so it also covers any future
     ConjNAdjp/ConjNAdvp/ConjNVP chain the corpus might contain."""
+    conjuncts = _coordination_conjuncts(node)
+    if conjuncts is None:
+        return []
     children = [c for c in list(node) if c.tag == 'Node']
-    if len(children) < 3 or len(children) % 2 == 0:
-        return []
     cat_main = children[0].attrib.get('Cat')
-    if not cat_main:
-        return []
-    for k, c in enumerate(children):
-        expected_cat = cat_main if k % 2 == 0 else 'cjp'
-        if c.attrib.get('Cat') != expected_cat:
-            return []
 
     role = COORD_CAT_ROLE.get(cat_main)
     if not role:
@@ -597,6 +721,19 @@ def _npadjp_variant(rule, children, norm_map):
     return None
 
 
+def _npofnp_variant(rule, children, norm_map):
+    """NPofNP whose second slot is a pronominal suffix (pos='suffix', morph Sp*)
+    is the DB's Noun-Sfx rather than a construct chain of two lexical nouns."""
+    if rule != 'NPofNP' or len(children) != 2:
+        return None
+    if 'Noun-Sfx' not in norm_map.values():
+        return None
+    head_b = plain_head(children[1])
+    if head_b and head_b.get('pos') == 'suffix':
+        return 'Noun-Sfx'
+    return None
+
+
 def extract_direct_match(node, norm_map, source_file, verse, hit_counter):
     """Mechanism 2: 2-child Rule nodes whose (normalised) Rule name is
     itself a DB PhraseType name (NPofNP, PrepNp->PrepNP, Np-Appos->NP-Appos,
@@ -611,7 +748,12 @@ def extract_direct_match(node, norm_map, source_file, verse, hit_counter):
     if len(children) != 2:
         return []
 
-    matched = RULE_NAME_OVERRIDES.get(rule) or _npadjp_variant(rule, children, norm_map) or norm_map.get(norm(rule))
+    matched = (
+        RULE_NAME_OVERRIDES.get(rule)
+        or _npadjp_variant(rule, children, norm_map)
+        or _npofnp_variant(rule, children, norm_map)
+        or norm_map.get(norm(rule))
+    )
     if not matched:
         return []
     head_a = plain_head(children[0])
@@ -703,9 +845,11 @@ def process_file(xml_path, valid_names, norm_map, hit_counter, rule_seen_counter
                 rule_seen_counter[rule] += 1
             if is_clause_pattern_node(node):
                 records.extend(extract_clause_pairs(node, valid_names, source_file, verse, hit_counter))
+                records.extend(extract_clause_full(node, source_file, verse, hit_counter))  # Feature 1
             else:
                 records.extend(extract_direct_match(node, norm_map, source_file, verse, hit_counter))
                 records.extend(extract_coordination(node, norm_map, source_file, verse, hit_counter))
+                records.extend(extract_coordination_full(node, source_file, verse, hit_counter))  # Feature 2
 
         records.extend(extract_v_io(sentence, parent_map, valid_names, source_file, verse, hit_counter))
 
@@ -722,14 +866,218 @@ def write_csv(records, output_csv):
             writer.writerow({k: r[k] for k in fieldnames})
 
 
+# DB types the extractors cannot produce from Cat/Rule tree shape alone.
+# Confirmed against the Macula Hebrew WLC nodes: these role tags never appear
+# as Cat, or no distinguishing structural pattern exists.
+NO_EXTRACTOR_REASONS = {
+    'ofNPNP': 'No Head/structure signal distinct from NPofNP; every (np, np) construct chain is labelled NPofNP',
+    'NP-All': 'Reverse of All-NP (noun then kol). Only QuanNP (quantifier-first) occurs; no NpQuan rule',
+    'PP-NP': 'Likely duplicate of PrepNP. PrepNp rules are labelled PrepNP',
+    'NotNpButNP': 'No Hebrew "but"-type NP coordinator (כי אם / אבל) found joining two NPs',
+    'NPAdjunct': 'No distinguishing Rule/Cat pattern found vs NP-PP / NPAdvp',
+    'VC-P': 'V and P never co-occur as siblings (verbless clauses use S-P; copula uses V-headed patterns)',
+    'P-VC': 'V and P never co-occur as siblings',
+    'V-O-Ellip': 'No elliptical-object Rule/Cat marker in the treebank',
+    'Prep-V': 'Likely duplicate of PrepVerb (already emitted from PP-before-V siblings)',
+    'Appo': 'Likely duplicate of NP-Appos (already emitted from Rule=Np-Appos)',
+    'PreX-V': 'PreX is not a Cat in the XML',
+    'PreC-S': 'PreC is not a Cat; would need a morph/suffix pass',
+    'PreC-V': 'PreC is not a Cat; would need a morph/suffix pass',
+    'PreO-IO': 'PreO is not a Cat; object suffixes are segmented as Pron2NP argument NPs',
+    'PreO-Prep': 'PreO is not a Cat',
+    'PreO-S': 'PreO is not a Cat',
+    'PreS-IO': 'PreS is not a Cat',
+    'PreS-O': 'PreS is not a Cat',
+    'S-PreC': 'PreC is not a Cat',
+    'S-PreO': 'PreO is not a Cat',
+    'PtcO-Prep': 'PtcO is not a Cat',
+    'PreS-Prep': 'PreS is not a Cat',
+    'PtcO-O': 'PtcO is not a Cat',
+    'PtcO-S': 'PtcO is not a Cat',
+    'V-PreC': 'PreC is not a Cat',
+    'PreC-O': 'PreC is not a Cat',
+    'O-PreC': 'PreC is not a Cat',
+    'PreC-IO': 'PreC is not a Cat',
+    'IO-PreC': 'PreC is not a Cat',
+    'Prep-PreC': 'PreC is not a Cat',
+    'PreC-Prep': 'PreC is not a Cat',
+    'S-PtcO': 'PtcO is not a Cat',
+    'PtcO-IO': 'PtcO is not a Cat',
+    'IO-PtcO': 'PtcO is not a Cat',
+    'Prep-PtcO': 'PtcO is not a Cat',
+    'O-PreO': 'PreO is not a Cat',
+    'PreS': 'PreS is not a Cat; subject agreement lives on the verb morph, not a tree role',
+    'PrcS': 'PrcS is not a Cat',
+    'PreO': 'PreO is not a Cat; object suffixes are segmented as separate Pron2NP nodes',
+    'PtcO': 'PtcO is not a Cat',
+}
+
+# Types the code CAN emit, with the XML signal that produces them.
+# Used only to explain 0-count types in a given sample (not a code gap).
+ABSENT_IN_SAMPLE_HINT = {
+    'AdjpNP': 'Needs Rule=AdjpNp (adjective before noun)',
+    'Demo-NP': 'Needs Rule=AdjpNp whose adjp head is a demonstrative pronoun',
+    'EitherOrNp': 'Needs NP coordination whose conjunction is או (Strong 176)',
+    'Conj2Adv': 'Needs (advp, cjp, advp) coordination',
+    'Conj2VP': 'Needs (vp, cjp, vp) coordination',
+    'O2-V': 'Needs an O2 role appearing before V in a clause-pattern node',
+    'VC-ADV': 'Needs copula haya (Strong 1961) sibling to an ADV role',
+    'PrepVC': 'Needs a PP role appearing before copula V',
+    'Neg-Adjp': 'Needs a negator ADV sibling to an adjectival P (Adjp2P)',
+    'X-Neg': 'Needs a negator ADV appearing after its partner role',
+}
+
+
+def write_test_report(path, xml_files, db_rows, valid_names, records, hit_counter, rule_seen_counter):
+    """Write a scannable coverage report: DB types processed vs not, plus
+    extra Conjunction / Clause-Level Structural rows that are not in the DB."""
+    type_counts = Counter(r['PhraseType'] for r in records)
+    by_file = Counter(r['SourceFile'] for r in records)
+
+    clause_full = Counter()
+    coord_full = Counter()
+    for key, n in hit_counter.items():
+        if key.startswith('[clause-full] '):
+            clause_full[key[len('[clause-full] '):]] += n
+        elif key.startswith('[coord-full] '):
+            coord_full[key[len('[coord-full] '):]] += n
+
+    processed = []
+    absent = []
+    no_extractor = []
+    for row in db_rows:
+        pt = row['PhraseType']
+        cnt = type_counts.get(pt, 0)
+        if cnt > 0:
+            processed.append((row, cnt))
+        elif pt in NO_EXTRACTOR_REASONS:
+            no_extractor.append((row, NO_EXTRACTOR_REASONS[pt]))
+        else:
+            hint = ABSENT_IN_SAMPLE_HINT.get(pt, 'Extractor exists; pattern not found in this XML sample')
+            absent.append((row, hint))
+
+    extra_clause = [(pt, n) for pt, n in type_counts.most_common()
+                    if pt not in valid_names and pt in clause_full]
+    extra_coord = [(pt, n) for pt, n in type_counts.most_common()
+                   if pt not in valid_names and pt in coord_full]
+    extra_other = [(pt, n) for pt, n in type_counts.most_common()
+                   if pt not in valid_names and pt not in clause_full and pt not in coord_full]
+
+    def fmt_db(row, extra):
+        return f"  {row['PhraseType']:<16s} {extra:<8} {row['Name']}"
+
+    lines = []
+    a = lines.append
+    a('=' * 78)
+    a('phrase_checker.py  PHRASE TYPE REPORT')
+    a('=' * 78)
+    a(f'XML input : {len(xml_files)} file(s)  ({", ".join(os.path.basename(f) for f in xml_files)})')
+    a(f'DB types  : {len(db_rows)} in tPhraseType_DB_.csv')
+    a(f'Rows out  : {len(records)}')
+    for fn, n in sorted(by_file.items()):
+        a(f'            {n:5d}  from {fn}')
+    a('')
+    a(f'DB processed          : {len(processed):3d} / {len(db_rows)}')
+    a(f'DB not in this sample : {len(absent):3d} / {len(db_rows)}  (code can handle; XML has no instance)')
+    a(f'DB no extractor       : {len(no_extractor):3d} / {len(db_rows)}  (needs morph/suffix or has no tree signal)')
+    a(f'Clause-level extra    : {len(extra_clause):3d} Rule names (3+ role patterns, not in DB)')
+    a(f'Conjunction extra     : {len(extra_coord):3d} Rule names (full N-ary chains, not in DB)')
+    a('')
+
+    a('-' * 78)
+    a(f'A. PROCESSED  — DB PhraseTypes found in this run  ({len(processed)})')
+    a('-' * 78)
+    a(f'  {"PhraseType":<16s} {"Count":<8} Name')
+    for row, cnt in sorted(processed, key=lambda x: (-x[1], x[0]['PhraseType'])):
+        a(fmt_db(row, str(cnt)))
+    a('')
+
+    a('-' * 78)
+    a(f'B. NOT PROCESSED  — in DB, code CAN handle, but not in this XML  ({len(absent)})')
+    a('-' * 78)
+    a(f'  {"PhraseType":<16s} {"Why 0":<8} Name  |  needed signal')
+    for row, hint in absent:
+        a(fmt_db(row, '0'))
+        a(f'  {" ":16s}          -> {hint}')
+    a('')
+
+    a('-' * 78)
+    a(f'C. NOT PROCESSED  — in DB, no tree-shape extractor  ({len(no_extractor)})')
+    a('-' * 78)
+    a(f'  {"PhraseType":<16s} {"Why 0":<8} Name')
+    for row, reason in no_extractor:
+        a(fmt_db(row, '0'))
+        a(f'  {" ":16s}          -> {reason}')
+    a('')
+
+    a('-' * 78)
+    a(f'D. Clause-Level Structural Rules  (Feature 1: 3+ role nodes, PhraseType = Rule)  ({len(extra_clause)})')
+    a('-' * 78)
+    if extra_clause:
+        for pt, n in extra_clause:
+            a(f'  {pt:<28s} {n}')
+    else:
+        a('  (none)')
+    a('')
+
+    a('-' * 78)
+    a(f'E. Conjunction Phrases  (Feature 2: full N-ary X-cjp-X chains, PhraseType = Rule)  ({len(extra_coord)})')
+    a('-' * 78)
+    a('  Pairwise DB types Conj2NP / Conj2Adjp / Conj2Adv / Conj2VP / EitherOrNp are in section A.')
+    a('  This section is the extra whole-chain rows (NpaNp, Conj3Np, CLaCL, PPandPP, ...).')
+    if extra_coord:
+        for pt, n in extra_coord:
+            a(f'  {pt:<28s} {n}')
+    else:
+        a('  (none)')
+    a('')
+
+    if extra_other:
+        a('-' * 78)
+        a(f'F. Other extra PhraseTypes (not in DB, not clause-full / coord-full)  ({len(extra_other)})')
+        a('-' * 78)
+        for pt, n in extra_other:
+            label = pt if pt else '(empty)'
+            a(f'  {label:<28s} {n}')
+        a('')
+
+    a('=' * 78)
+    a('Quick check: every DB PhraseType is in A (processed), B (absent from sample), or C (no extractor).')
+    a('Conjunction + clause-level extras are in D and E; they are expected and are not DB types.')
+    a('=' * 78)
+
+    text = '\n'.join(lines) + '\n'
+    if path:
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+    return text, {
+        'n_records': len(records),
+        'n_db': len(db_rows),
+        'n_processed': len(processed),
+        'n_absent': len(absent),
+        'n_no_extractor': len(no_extractor),
+        'n_clause': len(extra_clause),
+        'n_coord': len(extra_coord),
+        'processed': [(r['PhraseType'], c, r['Name'], r['Chinese'], r['PhraseTypeID']) for r, c in processed],
+        'absent': [(r['PhraseType'], r['Name'], r['Chinese'], h) for r, h in absent],
+        'no_extractor': [(r['PhraseType'], r['Name'], r['Chinese'], h) for r, h in no_extractor],
+        'clause': extra_clause,
+        'coord': extra_coord,
+        'by_file': dict(by_file),
+        'xml_files': [os.path.basename(f) for f in xml_files],
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--input-dir', default='./xml_input', help='Folder containing one or more .xml treebank files')
     ap.add_argument('--output-csv', default='./phrase_relationships.csv', help='Path of the single combined result CSV')
     ap.add_argument('--db-csv', default='./tPhraseType_DB_.csv', help='Path to tPhraseType(DB).csv')
+    ap.add_argument('--report', default='', help='Path of the coverage test report (default: <output-csv>.report.txt)')
     args = ap.parse_args()
 
-    valid_names, norm_map = load_phrase_db(args.db_csv)
+    valid_names, norm_map, db_rows = load_phrase_db(args.db_csv)
     print(f"Loaded {len(valid_names)} phrase types from {args.db_csv}")
 
     xml_files = sorted(
@@ -754,17 +1102,12 @@ def main():
     write_csv(all_records, args.output_csv)
     print(f"\nWrote {len(all_records)} total rows to {args.output_csv}")
 
-    # Coverage summary
-    type_counts = Counter(r['PhraseType'] for r in all_records)
-    print("\n=== PhraseType coverage in this run ===")
-    for pt, cnt in type_counts.most_common():
-        print(f"  {pt:15s} {cnt}")
-
-    unmapped = sorted(r for r in rule_seen_counter if hit_counter.get(r, 0) == 0)
-    if unmapped:
-        print("\n=== Rules seen but producing 0 records (may need a mapping) ===")
-        for r in unmapped:
-            print(f"  {r:15s} seen {rule_seen_counter[r]}x")
+    report_path = args.report or (os.path.splitext(args.output_csv)[0] + '.report.txt')
+    text, _summary = write_test_report(
+        report_path, xml_files, db_rows, valid_names, all_records, hit_counter, rule_seen_counter
+    )
+    print(text)
+    print(f"Wrote test report to {report_path}")
 
 
 if __name__ == '__main__':

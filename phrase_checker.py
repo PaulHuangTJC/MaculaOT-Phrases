@@ -239,7 +239,7 @@ def node_word_info(m, term_node):
     attribute directly, which meant its "Words" column never actually
     contained a Hebrew word. The real Hebrew text is the element's text
     content, so that's what's used here instead."""
-    strong = m.attrib.get('oshb-strongs', '') or term_node.attrib.get('StrongNumberX', '')
+    strong = term_node.attrib.get('StrongNumberX', '') or m.attrib.get('oshb-strongs', '')
     macula = term_node.attrib.get('n', '') or m.attrib.get(f'{XML_NS}id', '')
     return {
         'strong': strong,

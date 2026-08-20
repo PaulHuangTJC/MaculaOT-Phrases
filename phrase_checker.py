@@ -175,6 +175,27 @@ NEGATION_STRONGS = {'3808', '408', '1115', '369', '3809', '1077', '1097'}
 # VC-S/S-VC/VC-P/P-VC/VC-ADV/VCPrep/PrepVC DB phrase types.
 COPULA_STRONGS = {'1961'}
 
+# PhraseTypes that we intentionally exclude from the output even if the
+# extractor can synthesize them from tree shape.
+#
+# Motivation:
+# - coordination chains like (CL, cjp, CL) may have empty/blank Rule in the
+#   XML, but _coord_full_phrase_type() synthesises them as CLaCL / Conj{n}CL.
+# - Some users want those sentence-level "whole-chain rows" skipped while
+#   keeping all other phrase types untouched.
+SKIP_PHRASE_TYPE_PATTERNS = [
+    re.compile(r'^CLaCL$', re.IGNORECASE),
+    re.compile(r'^Conj\d+CL$', re.IGNORECASE),
+    re.compile(r'^NpaNp', re.IGNORECASE),
+]
+
+
+def should_skip_phrase_type(phrase_type):
+    pt = (phrase_type or '').strip()
+    if not pt:
+        return False
+    return any(pat.match(pt) for pat in SKIP_PHRASE_TYPE_PATTERNS)
+
 
 def _strong_key(strong):
     return (strong or '').lstrip('0') or '0'
@@ -532,6 +553,8 @@ def extract_clause_full(node, source_file, verse, hit_counter):
     if len(children) < 3:
         return []
     rule = node.attrib.get('Rule', '')
+    if should_skip_phrase_type(rule):
+        return []
     heads = []
     for c in children:
         h = head_for_role(c.attrib.get('Cat'), c)
@@ -591,7 +614,7 @@ def extract_coordination_full(node, source_file, verse, hit_counter):
     if not all(heads):
         return []
     phrase_type = _coord_full_phrase_type(node, conjuncts)
-    if not phrase_type:
+    if not phrase_type or should_skip_phrase_type(phrase_type):
         return []
     hit_counter[f"[coord-full] {phrase_type}"] += 1
     return [make_record_multi(phrase_type, node.attrib.get('nodeId', ''), heads, source_file, verse)]
@@ -863,6 +886,10 @@ def write_csv(records, output_csv):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in records:
+            # Final safety filter: ensure we never emit excluded phrase types
+            # due to future extractor changes.
+            if should_skip_phrase_type(r.get('PhraseType', '')):
+                continue
             writer.writerow({k: r[k] for k in fieldnames})
 
 
@@ -1024,7 +1051,7 @@ def write_test_report(path, xml_files, db_rows, valid_names, records, hit_counte
     a(f'E. Conjunction Phrases  (Feature 2: full N-ary X-cjp-X chains, PhraseType = Rule)  ({len(extra_coord)})')
     a('-' * 78)
     a('  Pairwise DB types Conj2NP / Conj2Adjp / Conj2Adv / Conj2VP / EitherOrNp are in section A.')
-    a('  This section is the extra whole-chain rows (NpaNp, Conj3Np, CLaCL, PPandPP, ...).')
+    a('  This section is the extra whole-chain rows (NpaNp, Conj3Np, PPandPP, ...).')
     if extra_coord:
         for pt, n in extra_coord:
             a(f'  {pt:<28s} {n}')

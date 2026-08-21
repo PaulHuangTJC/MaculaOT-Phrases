@@ -157,6 +157,8 @@ COORD_CAT_ROLE = {
     'adjp': 'Adjp',
     'advp': 'Adv',
     'vp': 'VP',
+    'pp': 'Pp',
+    'prep': 'Pp',
 }
 
 # Node Cats that are "function words" we skip over when hunting for the
@@ -185,9 +187,16 @@ COPULA_STRONGS = {'1961'}
 #   keeping all other phrase types untouched.
 SKIP_PHRASE_TYPE_PATTERNS = [
     re.compile(r'^CLaCL$', re.IGNORECASE),
+    re.compile(r'^CLandCL\d', re.IGNORECASE),
     re.compile(r'^Conj\d+CL$', re.IGNORECASE),
     re.compile(r'^NpaNp', re.IGNORECASE),
+    re.compile(r'^AdjpaAdjp', re.IGNORECASE),
+    re.compile(r'^PPandPP', re.IGNORECASE),
+    re.compile(r'^AdvpaAdvp', re.IGNORECASE),
+    re.compile(r'^AdvpandAdvp', re.IGNORECASE),
+    re.compile(r'^VPandVP', re.IGNORECASE),
 ]
+
 
 
 def should_skip_phrase_type(phrase_type):
@@ -632,8 +641,8 @@ def _coord_full_phrase_type(node, conjuncts):
     cat = conjuncts[0].attrib.get('Cat') or ''
     aliases = {
         'CL': ('CLaCL', 'Conj{n}CL'),
-        'pp': ('PPandPP', 'Conj{n}Pp'),
-        'PP': ('PPandPP', 'Conj{n}Pp'),
+        'pp': ('Conj2Pp', 'Conj{n}Pp'),
+        'PP': ('Conj2Pp', 'Conj{n}Pp'),
         'np': ('NpaNp', 'Conj{n}Np'),
         'adjp': ('AdjpaAdjp', 'Conj{n}Adjp'),
         'advp': ('AdvpaAdvp', 'Conj{n}Advp'),
@@ -666,7 +675,7 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
         return []
     children = [c for c in list(node) if c.tag == 'Node']
     cat_main = children[0].attrib.get('Cat')
-
+    
     role = COORD_CAT_ROLE.get(cat_main)
     if not role:
         return []
@@ -1050,8 +1059,8 @@ def write_test_report(path, xml_files, db_rows, valid_names, records, hit_counte
     a('-' * 78)
     a(f'E. Conjunction Phrases  (Feature 2: full N-ary X-cjp-X chains, PhraseType = Rule)  ({len(extra_coord)})')
     a('-' * 78)
-    a('  Pairwise DB types Conj2NP / Conj2Adjp / Conj2Adv / Conj2VP / EitherOrNp are in section A.')
-    a('  This section is the extra whole-chain rows (NpaNp, Conj3Np, PPandPP, ...).')
+    a('  Pairwise DB types Conj2NP / Conj2Adjp / Conj2Adv / Conj2VP / Conj2Pp / EitherOrNp are in section A.')
+    a('  This section is the extra whole-chain rows (NpaNp, Conj3Np, Conj3Pp, ...).')
     if extra_coord:
         for pt, n in extra_coord:
             a(f'  {pt:<28s} {n}')

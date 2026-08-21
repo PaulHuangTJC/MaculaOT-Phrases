@@ -152,12 +152,17 @@ XML_NS = '{http://www.w3.org/XML/1998/namespace}'
 
 # Cat -> a short "role name" used to build coordination PhraseType names
 # (np -> NP gives NpaNp -> Conj2NP, etc.)
+# NOTE: 'PP' (capitalised) is included alongside 'pp' because this corpus
+# uses both castings for prepositional-phrase nodes (Cat="pp" for the
+# inner PrepNp/PPandPP layer, Cat="PP" for the outer Pp2PP/NP2PP wrapper),
+# and either casing can in principle appear as the coordination node's Cat.
 COORD_CAT_ROLE = {
     'np': 'NP',
     'adjp': 'Adjp',
     'advp': 'Adv',
     'vp': 'VP',
     'pp': 'Pp',
+    'PP': 'Pp',
     'prep': 'Pp',
 }
 
@@ -576,6 +581,23 @@ def extract_clause_full(node, source_file, verse, hit_counter):
 
 OR_STRONGS = {'176', '176a'}  # Hebrew או ("or")
 
+# When the cjp linking two same-Cat conjuncts is או ("or", Strong 0176/0176a)
+# instead of plain ve- ("and"), the coordination gets a more specific DB
+# PhraseType than the plain Conj2<Role> one, keyed off the conjuncts' Cat:
+#   - np              -> EitherOrNp    ("noun or noun")
+#   - pp / PP / prep  -> EitherOrPrep  ("prep-phrase or prep-phrase")
+#   - adjp            -> EitherOrAdjp  ("adjective or adjective")
+# 'pp'/'PP' both appear in this corpus for prepositional-phrase nodes
+# (see COORD_CAT_ROLE); 'prep' is included defensively in case a bare
+# Cat="prep" coordination node is ever encountered instead of "pp"/"PP".
+EITHER_OR_CAT_MAP = {
+    'np': 'EitherOrNp',
+    'pp': 'EitherOrPrep',
+    'PP': 'EitherOrPrep',
+    'prep': 'EitherOrPrep',
+    'adjp': 'EitherOrAdjp',
+}
+
 
 def _coordination_conjuncts(node):
     """If `node` has the (X, cjp, X, cjp, X, ...) coordination shape (odd
@@ -656,8 +678,10 @@ def _coord_full_phrase_type(node, conjuncts):
 
 
 def extract_coordination(node, norm_map, source_file, verse, hit_counter):
-    """Mechanism 3: (X, cjp, X) -> Conj2<Role>, or EitherOrNp when the
-    conjoining word is או ("or") rather than plain "and".
+    """Mechanism 3: (X, cjp, X) -> Conj2<Role>, or EitherOrNp / EitherOrPrep /
+    EitherOrAdjp (per EITHER_OR_CAT_MAP, keyed on the conjuncts' Cat) when
+    the conjoining word is או ("or", Strong 0176/0176a) rather than plain
+    "and".
 
     Generalised to N-ary coordination chains: (X, cjp, X, cjp, X, ...).
     Rule names like Conj3Np, Conj4Np, Conj5Np, ... (the number = how many
@@ -691,8 +715,10 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
         is_or = cjp_head and _strong_key(cjp_head['strong']) in OR_STRONGS
 
         matched = None
-        if is_or and cat_main == 'np' and 'EitherOrNp' in norm_map.values():
-            matched = 'EitherOrNp'
+        if is_or:
+            either_or_name = EITHER_OR_CAT_MAP.get(cat_main)
+            if either_or_name and either_or_name in norm_map.values():
+                matched = either_or_name
         if not matched:
             matched = norm_map.get(norm(f"Conj2{role}"))
         if not matched:

@@ -599,6 +599,57 @@ EITHER_OR_CAT_MAP = {
 }
 
 
+# Cats used for PP/prepositional-phrase coordination conjuncts (see
+# COORD_CAT_ROLE / _coordination_conjuncts). Shared by both coordination
+# extractors so the "use the preposition, not the noun" special-casing
+# stays in one place.
+PP_COORD_CATS = {'pp', 'PP', 'prep'}
+
+
+def _pp_conjunct_noun_head(pp_node):
+    """Governed-noun head word for a single PP-coordination conjunct.
+
+    A PP conjunct that is a plain PrepNp construction governs a real noun,
+    so we can additionally report that noun's head (Conj2Np / Conj{n}Np,
+    per the user's spec point 2). We key off Rule=='PrepNp' -- the same
+    signal the existing V-IO mechanism (find_prepnp_governor) uses -- 
+    rather than checking the first child's Cat directly, because the
+    preposition itself is sometimes wrapped in an extra P2PP/Pp2PP layer
+    (Cat='pp', not 'prep') before the corpus gets to the actual <m>
+    terminal; the complement slot (children[1]) is what matters here.
+
+    Anything else -- a PrepCL conjunct (the complement is a full clause),
+    a PpAdvp conjunct (the complement is an adverbial), a missing/extra
+    child, or a complement whose own head isn't morphologically a noun --
+    has no governed noun to report, so this returns None. It never
+    raises: every attribute lookup is guarded, so malformed/unexpected
+    conjunct shapes are just skipped.
+    """
+    if pp_node is None or pp_node.tag != 'Node':
+        return None
+    if pp_node.attrib.get('Rule') != 'PrepNp':
+        return None
+    children = [c for c in list(pp_node) if c.tag == 'Node']
+    if len(children) != 2:
+        return None
+    comp_child = children[1]
+    if comp_child.attrib.get('Cat') != 'np':
+        return None
+    head = plain_head(comp_child)
+    if head and head.get('pos') == 'noun':
+        return head
+    return None
+
+
+def _governed_np_full_phrase_type(n):
+    """Whole-chain PhraseType for the governed-noun row synthesised from a
+    3+-way PP coordination chain: Conj3Np, Conj4Np, ... -- mirrors the
+    naming used for the primary Pp row (Conj{n}Pp) and for the other Cat
+    aliases in _coord_full_phrase_type. Never called with n==2 -- see the
+    call site in extract_coordination_full for why."""
+    return f'Conj{n}Np'
+
+
 def _coordination_conjuncts(node):
     """If `node` has the (X, cjp, X, cjp, X, ...) coordination shape (odd
     number of children >= 3, alternating the same Cat on every even
@@ -641,14 +692,41 @@ def extract_coordination_full(node, source_file, verse, hit_counter):
     conjuncts = _coordination_conjuncts(node)
     if not conjuncts:
         return []
-    heads = [plain_head(c) for c in conjuncts]
+    cat_main = conjuncts[0].attrib.get('Cat')
+    is_pp_coord = cat_main in PP_COORD_CATS
+    # PP coordination reports the leading preposition of each branch, not
+    # the noun it governs (point 1 of the user's spec) -- everything else
+    # keeps using the ordinary recursive head-of-subtree lookup.
+    head_fn = prep_word_head if is_pp_coord else plain_head
+    heads = [head_fn(c) for c in conjuncts]
     if not all(heads):
         return []
     phrase_type = _coord_full_phrase_type(node, conjuncts)
-    if not phrase_type or should_skip_phrase_type(phrase_type):
-        return []
-    hit_counter[f"[coord-full] {phrase_type}"] += 1
-    return [make_record_multi(phrase_type, node.attrib.get('nodeId', ''), heads, source_file, verse)]
+    records = []
+    if phrase_type and not should_skip_phrase_type(phrase_type):
+        hit_counter[f"[coord-full] {phrase_type}"] += 1
+        records.append(make_record_multi(phrase_type, node.attrib.get('nodeId', ''), heads, source_file, verse))
+
+    # Point 2 of the spec: if every PP conjunct is a plain PrepNp whose
+    # complement has a valid noun head, additionally emit the governed-noun
+    # chain -- but only for genuine 3+-way chains (Conj3Np, Conj4Np, ...).
+    # For a 2-conjunct chain this would just duplicate the pairwise Conj2NP
+    # record extract_coordination() already emits (same two heads, same
+    # node) -- exactly the case every other coordination Cat here already
+    # avoids by having its n==2 full-chain name (NpaNp, AdjpaAdjp, PPandPP,
+    # ...) match SKIP_PHRASE_TYPE_PATTERNS. Non-NP complements (PrepCL,
+    # PpAdvp, ...) simply make _pp_conjunct_noun_head return None for that
+    # conjunct, so the whole additional row is skipped rather than raising
+    # or emitting a partial/incorrect record.
+    if is_pp_coord and len(conjuncts) > 2:
+        noun_heads = [_pp_conjunct_noun_head(c) for c in conjuncts]
+        if all(noun_heads):
+            np_phrase_type = _governed_np_full_phrase_type(len(conjuncts))
+            if np_phrase_type and not should_skip_phrase_type(np_phrase_type):
+                hit_counter[f"[coord-full] {np_phrase_type}"] += 1
+                records.append(make_record_multi(
+                    np_phrase_type, node.attrib.get('nodeId', ''), noun_heads, source_file, verse))
+    return records
 
 
 def _coord_full_phrase_type(node, conjuncts):
@@ -704,6 +782,12 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
     if not role:
         return []
 
+    # PP coordination reports the leading preposition of each branch, not
+    # the noun it governs (point 1 of the user's spec) -- everything else
+    # keeps using the ordinary recursive head-of-subtree lookup.
+    is_pp_coord = cat_main in PP_COORD_CATS
+    head_fn = prep_word_head if is_pp_coord else plain_head
+
     records = []
     conjunct_positions = list(range(0, len(children), 2))
     for k in range(len(conjunct_positions) - 1):
@@ -721,15 +805,35 @@ def extract_coordination(node, norm_map, source_file, verse, hit_counter):
                 matched = either_or_name
         if not matched:
             matched = norm_map.get(norm(f"Conj2{role}"))
-        if not matched:
-            continue
+        if matched:
+            head_a = head_fn(left)
+            head_b = head_fn(right)
+            if head_a and head_b:
+                hit_counter[node.attrib.get('Rule', '')] += 1
+                records.append(make_record(matched, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse))
 
-        head_a = plain_head(left)
-        head_b = plain_head(right)
-        if not (head_a and head_b):
-            continue
-        hit_counter[node.attrib.get('Rule', '')] += 1
-        records.append(make_record(matched, node.attrib.get('nodeId', ''), head_a, head_b, source_file, verse))
+        # Point 2 of the spec: additionally link the governed head nouns
+        # when both PP conjuncts are plain PrepNp branches with a valid
+        # noun complement (PrepCL/PpAdvp/etc. branches gracefully yield
+        # None from _pp_conjunct_noun_head and are simply skipped here).
+        # Mirror the primary record's and/or distinction: an או ("or")
+        # cjp between the PP conjuncts means the nouns it governs are
+        # also "noun-or-noun" (EitherOrNp), not "noun-and-noun" (Conj2Np).
+        if is_pp_coord:
+            noun_a = _pp_conjunct_noun_head(left)
+            noun_b = _pp_conjunct_noun_head(right)
+            if noun_a and noun_b:
+                np_matched = None
+                if is_or:
+                    either_or_np_name = EITHER_OR_CAT_MAP.get('np')
+                    if either_or_np_name and either_or_np_name in norm_map.values():
+                        np_matched = either_or_np_name
+                if not np_matched:
+                    np_matched = norm_map.get(norm('Conj2Np'))
+                if np_matched:
+                    hit_counter[f"{node.attrib.get('Rule', '')} [Np]"] += 1
+                    records.append(make_record(
+                        np_matched, node.attrib.get('nodeId', ''), noun_a, noun_b, source_file, verse))
     return records
 
 

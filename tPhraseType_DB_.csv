@@ -66,12 +66,12 @@ PhraseTypeID,PhraseType,PhraseGroupID,Name,Chinese
 68,Prep-PtcO,NULL,Preposition-Participle with Object Suffix,介系詞｜受詞字尾分詞
 69,Neg-Adjp,NULL,Negative-Adjective,否定詞｜形容詞
 70,Neg-V,NULL,Negative-Verb,否定詞｜動詞
-71,X-Neg,NULL,Word-Negative,字詞｜否定詞
+71,Np-Neg,NULL,Noun-Negative,名詞｜否定詞
 72,O-PreO,NULL,Object-Predicate with Object Suffix,直接受詞 | 受詞字尾動詞
 100,PtcpNP,NULL,Adjectival Participle-Noun,形容分詞｜名詞
 101,Np-Demo,NULL,Noun-Demonstrative,名詞｜指示代名詞
 102,V-O-Ellip,NULL,Verb-Object in Elliptical Clause,動詞｜簡略字句中之受詞
-103,Neg-X,NULL,Negative-Word,否定詞｜字詞
+103,Neg-Np,NULL,Negative-Noun,否定詞｜名詞
 109,Prep-V,NULL,Preposition-Verb,介系詞｜動詞
 110,Appo,NULL,Appositions,同位語
 111,PreX-V,NULL,Predicate Complement-Verb,謂語補足語｜動詞
@@ -79,6 +79,8 @@ PhraseTypeID,PhraseType,PhraseGroupID,Name,Chinese
 113,Conj2Pp,NULL,Preposition-and-Preposition,介系詞（和）介系詞
 114,EitherOrPrep,NULL,Preposition-or-Preposition,介系詞（或）介系詞
 115,EitherOrAdjp,NULL,Adjective-or-Adjective,形容詞（或）形容詞
+116,Adjp-Neg,NULL,Adjective-Negative,形容詞｜否定詞
+117,V-Neg,NULL,Verb-Negative,動詞｜否定詞
 1001,Noun-Sfx,NULL,Noun-Sfx,Noun-Sfx
 1002,PreS,NULL,Predicate with Subject Suffix,主詞字尾分詞
 1003,PrcS,NULL,Predicate Complement with Subject Suffix,主詞字尾謂語補足語

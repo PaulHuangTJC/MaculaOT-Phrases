@@ -22,8 +22,11 @@ New in this pass, on top of the original three mechanisms below:
     lo/al/bilti/eyn/Aramaic la/bal/beli): an ADV-V pairing where the
     adverb is one of these is now correctly labelled Neg-V rather than
     generic ADV-V, mirroring the user's original notice. Neg-Adjp
-    (negator + adjectival predicate) and the generic Neg-X/X-Neg fallback
-    (negator + any other role) are handled the same way.
+    (negator + adjectival predicate) is handled the same way. A negator
+    ADV directly preceding a plain nominal S, O, or P (i.e. not an
+    adjectival predicate, and not a verb) is labelled Neg-Np. There is
+    no generic Neg-X/X-Neg fallback: a negator paired with anything
+    outside these three specific patterns emits nothing.
   - Copula detection (Strong's 1961, haya "to be"): S-V/V-S, VerbPrep/
     PrepVerb pairings involving this verb are now labelled with the more
     specific VC-S/S-VC/VCPrep/PrepVC/VC-ADV. (VC-P/P-VC never fire because
@@ -174,7 +177,7 @@ SKIP_HEAD_CATS = {'omp', 'om', 'art'}
 
 # Strong's numbers for the core Hebrew negative particles (lo, al, bilti,
 # eyn, Aramaic la, bal, beli). Used to distinguish plain "ADV-V" from the
-# more specific "Neg-V"/"Neg-Adjp"/"Neg-X"/"X-Neg" DB phrase types.
+# more specific "Neg-V"/"Neg-Adjp"/"Neg-Np" DB phrase types.
 NEGATION_STRONGS = {'3808', '408', '1115', '369', '3809', '1077', '1097'}
 
 # Strong's number for the Hebrew copula verb "to be" (haya). Used to
@@ -489,6 +492,13 @@ def role_candidates(cat, node, head):
       - P realized by an adjective phrase -> also try 'Adjp' (needed for
         'Neg-Adjp', which pairs with the *word class* not the role name)
     Falls back to the plain role/Cat itself last.
+
+    NOTE: this deliberately does NOT add a generic 'Np' candidate for
+    S/O/P here. Doing so would be direction-agnostic (it would let, e.g.,
+    an O-then-ADV pairing accidentally match the DB's separate 'Np-Neg'
+    entry), which is broader than what's specified for 'Neg-Np'. The
+    strictly-ordered, ADV-first Neg-Np check lives in
+    extract_clause_pairs instead -- see is_nominal_np_head() below.
     """
     cands = []
     if cat == 'V' and is_copula(head):
@@ -503,12 +513,48 @@ def role_candidates(cat, node, head):
     return cands
 
 
+# Syntactic roles eligible to pair with a negator ADV as 'Neg-Np'. 'V' is
+# excluded (that pairing is 'Neg-V' instead, handled by role_candidates'
+# normal cands_a x cands_b product).
+NEG_NP_PARTNER_ROLES = {'S', 'O', 'P'}
+
+
+def is_nominal_np_head(cat, node, head):
+    """True when `cat` is one of the roles allowed to pair with a negator
+    as 'Neg-Np' (S, O, or P) AND its head is neither an adjective (that
+    pairing is 'Neg-Adjp' instead) nor a verb (that would make it a
+    clausal/verbal role, not a plain nominal one)."""
+    if cat not in NEG_NP_PARTNER_ROLES:
+        return False
+    if not head:
+        return False
+    if (head.get('pos') or '').lower() in ('adjective', 'verb'):
+        return False
+    if cat == 'P':
+        # Same tree-shape signal role_candidates() uses to detect an
+        # adjectival predicate (P headed by an adjp child) -> Neg-Adjp,
+        # not Neg-Np.
+        children = [c for c in list(node) if c.tag == 'Node']
+        if children and children[0].attrib.get('Cat') == 'adjp':
+            return False
+    return True
+
+
 def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
     """Mechanism 1: every pair of roles in a clause-pattern node, tested
     both orderings against the DB, substituting more specific role labels
     (VC for the copula verb, Neg for a negative particle, Adjp for an
     adjectival predicate) where applicable. Also emits VerbPrep/PrepVerb
-    (or VCPrep/PrepVC for the copula) whenever V and PP are siblings."""
+    (or VCPrep/PrepVC for the copula) whenever V and PP are siblings.
+
+    Negation: 'Neg-V' (ADV negator + V) and 'Neg-Adjp' (ADV negator + an
+    adjectival P) both fall out of the plain cands_a x cands_b product
+    above via role_candidates(). The one case that product can't produce
+    on its own -- a negator ADV directly preceding a plain nominal S, O,
+    or P -- is handled explicitly below as 'Neg-Np'. There is no longer
+    any generic 'Neg-X' / 'X-Neg' catch-all: a negator paired with any
+    other role (another ADV, a CJP, ...) simply emits nothing.
+    """
     records = []
     children = [c for c in list(node) if c.tag == 'Node']
     roles = [(c.attrib.get('Cat'), c) for c in children]
@@ -536,12 +582,16 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
                 if name:
                     break
             if name is None:
-                # Generic negation fallback: negator paired with a role
-                # that has no specific "Neg-<role>" entry in the DB.
-                if cat_a == 'ADV' and is_negator(head_a) and 'Neg-X' in valid_names:
-                    name = 'Neg-X'
-                elif cat_b == 'ADV' and is_negator(head_b) and 'X-Neg' in valid_names:
-                    name = 'X-Neg'
+                # Neg-Np: negator ADV directly preceding (i.e. it must be
+                # cat_a, the earlier sibling -- not cat_b) a plain
+                # nominal S/O/P role. Adjectival and verbal partners are
+                # excluded by is_nominal_np_head() since those are
+                # already matched above as Neg-Adjp / Neg-V respectively
+                # and never reach this branch.
+                if (cat_a == 'ADV' and is_negator(head_a)
+                        and is_nominal_np_head(cat_b, node_b, head_b)
+                        and 'Neg-Np' in valid_names):
+                    name = 'Neg-Np'
             if name:
                 records.append(make_record(name, node_id, head_a, head_b, source_file, verse))
                 hit_counter[node.attrib.get('Rule', '')] += 1
@@ -1124,7 +1174,7 @@ ABSENT_IN_SAMPLE_HINT = {
     'VC-ADV': 'Needs copula haya (Strong 1961) sibling to an ADV role',
     'PrepVC': 'Needs a PP role appearing before copula V',
     'Neg-Adjp': 'Needs a negator ADV sibling to an adjectival P (Adjp2P)',
-    'X-Neg': 'Needs a negator ADV appearing after its partner role',
+    'Neg-Np': 'Needs a negator ADV directly preceding a plain nominal S/O/P sibling',
 }
 
 

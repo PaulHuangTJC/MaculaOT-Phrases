@@ -382,18 +382,45 @@ def head_word(node, skip_cats=None):
     return head_word(chosen, skip_cats)
 
 
+def direct_object_clause(node):
+    """True complement-clause detection for an O/O2 role: the object IS a
+    clause only when the role node's own DIRECT child is Cat='CL' (the
+    Rule2CL2Ox pattern, e.g. Gen 2:19 "whatever he calls it" -- O's only
+    child is a full CL). Returns that CL child, or None.
+
+    This is intentionally shallow (checks only the immediate child), NOT
+    a recursive/unbounded search of the whole O subtree. An unbounded
+    search is wrong: a plain NP object can carry a *relative-clause
+    modifier* several levels down (Cat='np' Rule='NpRelp' -> Cat='relp'
+    Rule='relCL' -> Cat='CL'), e.g. Gen 2:2's O = 'his work
+    (מְלַאכְתּוֹ) which he had done (אֲשֶׁר עָשָׂה)'. That relative
+    clause also contains a Cat='V' node, but it modifies the noun --
+    it is not the object itself. Treating 'contains a V anywhere' as
+    'is a complement clause' incorrectly pulls in the relative clause's
+    verb ('done') as the V-O partner instead of the true object head
+    ('work')."""
+    children = [c for c in list(node) if c.tag == 'Node']
+    if len(children) == 1 and children[0].attrib.get('Cat') == 'CL':
+        return children[0]
+    return None
+
+
 def smart_object_head(node):
-    """Head word for an O/O2-type role: if the role's own sub-tree embeds
-    a clause (i.e. contains a nested Cat='V'), use that embedded verb's
-    head (the object is itself a verbal complement clause). Otherwise use
-    the object's own head noun, following the tree's Head attribute
-    (falling back to skipping object-marker / article particles only if
-    Head is missing/malformed)."""
-    embedded_v = find_descendant_by_cat(node, 'V')
-    if embedded_v is not None:
-        head = head_word(embedded_v, skip_cats=SKIP_HEAD_CATS)
-        if head:
-            return head
+    """Head word for an O/O2-type role: if the role node itself directly
+    wraps a clause (see direct_object_clause -- a genuine verbal
+    complement clause, not merely a relative clause buried inside an
+    NP), use that embedded clause's verb as the head. Otherwise use the
+    object's own head noun, following the tree's Head attribute (which
+    already correctly skips past any relative-clause modifier on its
+    own, since NpRelp's Head index points at the NP conjunct, not the
+    relp conjunct)."""
+    embedded_cl = direct_object_clause(node)
+    if embedded_cl is not None:
+        embedded_v = find_descendant_by_cat(embedded_cl, 'V')
+        if embedded_v is not None:
+            head = head_word(embedded_v, skip_cats=SKIP_HEAD_CATS)
+            if head:
+                return head
     return head_word(node, skip_cats=SKIP_HEAD_CATS)
 
 
@@ -533,11 +560,18 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
                 continue
             copula = is_copula(head_v)
             if vi < ppi:
+                # V comes first in the verse -> Verb-then-Prep order.
                 name = 'VCPrep' if copula and 'VCPrep' in valid_names else 'VerbPrep'
+                first, second = head_v, head_pp
             else:
+                # PP comes first in the verse -> Prep-then-Verb order.
+                # The Words/Gloss/etc. column order must match the label
+                # ("PrepVerb"/"PrepVC" implies prep first, verb second),
+                # not always verb-first regardless of which label fired.
                 name = 'PrepVC' if copula and 'PrepVC' in valid_names else 'PrepVerb'
+                first, second = head_pp, head_v
             if name in valid_names:
-                records.append(make_record(name, node_id, head_v, head_pp, source_file, verse))
+                records.append(make_record(name, node_id, first, second, source_file, verse))
                 hit_counter[node.attrib.get('Rule', '')] += 1
     return records
 

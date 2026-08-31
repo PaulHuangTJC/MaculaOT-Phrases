@@ -22,11 +22,11 @@ New in this pass, on top of the original three mechanisms below:
     lo/al/bilti/eyn/Aramaic la/bal/beli): an ADV-V pairing where the
     adverb is one of these is now correctly labelled Neg-V rather than
     generic ADV-V, mirroring the user's original notice. Neg-Adjp
-    (negator + adjectival predicate) is handled the same way. A negator
-    ADV directly preceding a plain nominal S, O, or P (i.e. not an
-    adjectival predicate, and not a verb) is labelled Neg-Np. There is
-    no generic Neg-X/X-Neg fallback: a negator paired with anything
-    outside these three specific patterns emits nothing.
+    (negator + adjectival predicate) is handled the same way. Neg-Np /
+    Np-Neg follow a two-pattern rule: (1) phrase-level direct noun/
+    pronoun negation under NP/PP parents with terminal-index adjacency;
+    (2) verbless/nominal clause ADV + S/P (or reverse) with noun/pronoun
+    head and terminal-index adjacency. No generic Neg-X/X-Neg fallback.
   - Copula detection (Strong's 1961, haya "to be"): S-V/V-S, VerbPrep/
     PrepVerb pairings involving this verb are now labelled with the more
     specific VC-S/S-VC/VCPrep/PrepVC/VC-ADV. (VC-P/P-VC never fire because
@@ -493,12 +493,10 @@ def role_candidates(cat, node, head):
         'Neg-Adjp', which pairs with the *word class* not the role name)
     Falls back to the plain role/Cat itself last.
 
-    NOTE: this deliberately does NOT add a generic 'Np' candidate for
-    S/O/P here. Doing so would be direction-agnostic (it would let, e.g.,
-    an O-then-ADV pairing accidentally match the DB's separate 'Np-Neg'
-    entry), which is broader than what's specified for 'Neg-Np'. The
-    strictly-ordered, ADV-first Neg-Np check lives in
-    extract_clause_pairs instead -- see is_nominal_np_head() below.
+    NOTE: Neg-Np / Np-Neg are NOT produced via a generic 'Np' candidate
+    here. They are handled by the dedicated two-pattern extractors
+    (extract_neg_np_clause_pairs / extract_neg_np_constituent) so that
+    Neg-V and Neg-Adjp continue to win through this product alone.
     """
     cands = []
     if cat == 'V' and is_copula(head):
@@ -513,31 +511,187 @@ def role_candidates(cat, node, head):
     return cands
 
 
-# Syntactic roles eligible to pair with a negator ADV as 'Neg-Np'. 'V' is
-# excluded (that pairing is 'Neg-V' instead, handled by role_candidates'
-# normal cands_a x cands_b product).
-NEG_NP_PARTNER_ROLES = {'S', 'O', 'P'}
+# Pattern 2 partners for Neg-Np/Np-Neg: only Subject or Predicate.
+# 'V' is Neg-V; adjectival P is Neg-Adjp; 'O' is intentionally excluded.
+NEG_NP_CLAUSE_PARTNER_ROLES = {'S', 'P'}
+
+# Pattern 1 parents: phrase nodes that can host direct noun/pronoun negation.
+NEG_NP_PHRASE_PARENT_CATS = {'np', 'NP', 'pp', 'PP'}
 
 
-def is_nominal_np_head(cat, node, head):
-    """True when `cat` is one of the roles allowed to pair with a negator
-    as 'Neg-Np' (S, O, or P) AND its head is neither an adjective (that
-    pairing is 'Neg-Adjp' instead) nor a verb (that would make it a
-    clausal/verbal role, not a plain nominal one)."""
-    if cat not in NEG_NP_PARTNER_ROLES:
-        return False
+def is_noun_or_pronoun(head):
+    """True when head POS is noun or pronoun (Pattern 1/2 nominal target)."""
     if not head:
         return False
-    if (head.get('pos') or '').lower() in ('adjective', 'verb'):
-        return False
-    if cat == 'P':
-        # Same tree-shape signal role_candidates() uses to detect an
-        # adjectival predicate (P headed by an adjp child) -> Neg-Adjp,
-        # not Neg-Np.
-        children = [c for c in list(node) if c.tag == 'Node']
-        if children and children[0].attrib.get('Cat') == 'adjp':
+    return (head.get('pos') or '').lower() in ('noun', 'pronoun')
+
+
+def is_verbless_clause_pattern_node(node):
+    """Clause-pattern node with no V among direct children (nominal/verbless)."""
+    try:
+        if not is_clause_pattern_node(node):
             return False
-    return True
+        children = [c for c in list(node) if c.tag == 'Node']
+        return all(c.attrib.get('Cat') != 'V' for c in children)
+    except Exception:
+        return False
+
+
+def _safe_word_position(head):
+    """Verse-terminal index from a head dict; None on any missing/malformed value."""
+    try:
+        vi = (head or {}).get('verse_index', '')
+        m = re.search(r'!(\d+)$', vi)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def _neg_word_from_child(child):
+    """Negative particle word for a phrase child, or None."""
+    try:
+        head = plain_head(child)
+        if head and is_negator(head):
+            return head
+        first = first_m_in_subtree(child)
+        if first and is_negator(first):
+            return first
+    except Exception:
+        return None
+    return None
+
+
+def _nominal_word_from_child(child):
+    """Return (head_for_record, first_terminal_for_adjacency) when child is
+    noun/pronoun-headed (or a noun/pronoun terminal); else None."""
+    try:
+        first = first_m_in_subtree(child)
+        head = plain_head(child)
+        if head and is_noun_or_pronoun(head):
+            return head, (first or head)
+        if first and is_noun_or_pronoun(first):
+            return first, first
+    except Exception:
+        return None
+    return None
+
+
+def match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names):
+    """If neg and nominal are terminal-adjacent, return
+    (phrase_type, head_a, head_b) ordered to match the label; else None."""
+    if not (neg_head and nominal_head and nominal_first):
+        return None
+    neg_pos = _safe_word_position(neg_head)
+    nom_pos = _safe_word_position(nominal_first)
+    if neg_pos is None or nom_pos is None:
+        return None
+    if nom_pos == neg_pos + 1 and 'Neg-Np' in valid_names:
+        return 'Neg-Np', neg_head, nominal_head
+    if neg_pos == nom_pos + 1 and 'Np-Neg' in valid_names:
+        return 'Np-Neg', nominal_head, neg_head
+    return None
+
+
+def extract_neg_np_constituent(node, valid_names, source_file, verse, hit_counter):
+    """Pattern 1: Non-clausal/constituent Neg-Np/Np-Neg.
+
+    Parent: phrase node (NP or PP).
+    One direct child hosts a negative particle; another hosts a noun or
+    pronoun (terminal or sibling constituent). Emit when their terminal
+    indices are immediately adjacent (n / n+1), labelled by text order.
+    """
+    records = []
+    try:
+        if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
+            return records
+        cat = node.attrib.get('Cat', '')
+        if cat not in NEG_NP_PHRASE_PARENT_CATS:
+            return records
+        children = [c for c in list(node) if c.tag == 'Node']
+        if len(children) < 2:
+            return records
+        node_id = node.attrib.get('nodeId', '')
+        seen = set()
+        for i, child_a in enumerate(children):
+            for j, child_b in enumerate(children):
+                if i == j:
+                    continue
+                neg_head = _neg_word_from_child(child_a)
+                nominal = _nominal_word_from_child(child_b)
+                if not (neg_head and nominal):
+                    continue
+                nominal_head, nominal_first = nominal
+                matched = match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names)
+                if not matched:
+                    continue
+                name, head_left, head_right = matched
+                dedupe = (name, neg_head.get('macula', ''), nominal_head.get('macula', ''))
+                if dedupe in seen:
+                    continue
+                seen.add(dedupe)
+                records.append(make_record(name, node_id, head_left, head_right, source_file, verse))
+                hit_counter[f"[neg-np-p1] {node.attrib.get('Rule', '')}"] += 1
+    except Exception:
+        # Malformed subtree must not abort the rest of extraction.
+        return records
+    return records
+
+
+def extract_neg_np_clause_pairs(node, valid_names, source_file, verse, hit_counter):
+    """Pattern 2: Clausal predicate Neg-Np/Np-Neg on verbless/nominal clauses.
+
+    Parent: clause-pattern node with no V role.
+    One child Cat=ADV headed by a negative particle; the other Cat=S or P
+    with a noun/pronoun head. Terminal index of the first word of the
+    S/P child must immediately follow (or precede, for Np-Neg) the
+    negative word.
+    """
+    records = []
+    try:
+        if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
+            return records
+        if not is_verbless_clause_pattern_node(node):
+            return records
+        children = [c for c in list(node) if c.tag == 'Node']
+        roles = [(c.attrib.get('Cat'), c) for c in children]
+        node_id = node.attrib.get('nodeId', '')
+        seen = set()
+        for i, (cat_a, node_a) in enumerate(roles):
+            for j, (cat_b, node_b) in enumerate(roles):
+                if i == j:
+                    continue
+                # ADV + (S|P), either child order
+                if cat_a == 'ADV' and cat_b in NEG_NP_CLAUSE_PARTNER_ROLES:
+                    adv_node, nom_node, nom_cat = node_a, node_b, cat_b
+                elif cat_b == 'ADV' and cat_a in NEG_NP_CLAUSE_PARTNER_ROLES:
+                    adv_node, nom_node, nom_cat = node_b, node_a, cat_a
+                else:
+                    continue
+                neg_head = plain_head(adv_node)
+                if not (neg_head and is_negator(neg_head)):
+                    continue
+                # Adjectival P is Neg-Adjp, not Neg-Np.
+                if nom_cat == 'P':
+                    nom_children = [c for c in list(nom_node) if c.tag == 'Node']
+                    if nom_children and nom_children[0].attrib.get('Cat') == 'adjp':
+                        continue
+                nominal_head = plain_head(nom_node)
+                if not is_noun_or_pronoun(nominal_head):
+                    continue
+                nominal_first = first_m_in_subtree(nom_node) or nominal_head
+                matched = match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names)
+                if not matched:
+                    continue
+                name, head_left, head_right = matched
+                dedupe = (name, neg_head.get('macula', ''), nominal_head.get('macula', ''))
+                if dedupe in seen:
+                    continue
+                seen.add(dedupe)
+                records.append(make_record(name, node_id, head_left, head_right, source_file, verse))
+                hit_counter[f"[neg-np-p2] {node.attrib.get('Rule', '')}"] += 1
+    except Exception:
+        return records
+    return records
 
 
 def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
@@ -547,13 +701,10 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
     adjectival predicate) where applicable. Also emits VerbPrep/PrepVerb
     (or VCPrep/PrepVC for the copula) whenever V and PP are siblings.
 
-    Negation: 'Neg-V' (ADV negator + V) and 'Neg-Adjp' (ADV negator + an
-    adjectival P) both fall out of the plain cands_a x cands_b product
-    above via role_candidates(). The one case that product can't produce
-    on its own -- a negator ADV directly preceding a plain nominal S, O,
-    or P -- is handled explicitly below as 'Neg-Np'. There is no longer
-    any generic 'Neg-X' / 'X-Neg' catch-all: a negator paired with any
-    other role (another ADV, a CJP, ...) simply emits nothing.
+    Negation: 'Neg-V' and 'Neg-Adjp' fall out of the cands_a x cands_b
+    product via role_candidates(). 'Neg-Np' / 'Np-Neg' are NOT handled
+    here -- see extract_neg_np_clause_pairs (Pattern 2) so verbal clauses
+    and O-partners cannot leak into Neg-Np.
     """
     records = []
     children = [c for c in list(node) if c.tag == 'Node']
@@ -581,17 +732,6 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
                         break
                 if name:
                     break
-            if name is None:
-                # Neg-Np: negator ADV directly preceding (i.e. it must be
-                # cat_a, the earlier sibling -- not cat_b) a plain
-                # nominal S/O/P role. Adjectival and verbal partners are
-                # excluded by is_nominal_np_head() since those are
-                # already matched above as Neg-Adjp / Neg-V respectively
-                # and never reach this branch.
-                if (cat_a == 'ADV' and is_negator(head_a)
-                        and is_nominal_np_head(cat_b, node_b, head_b)
-                        and 'Neg-Np' in valid_names):
-                    name = 'Neg-Np'
             if name:
                 records.append(make_record(name, node_id, head_a, head_b, source_file, verse))
                 hit_counter[node.attrib.get('Rule', '')] += 1
@@ -1091,11 +1231,16 @@ def process_file(xml_path, valid_names, norm_map, hit_counter, rule_seen_counter
                 rule_seen_counter[rule] += 1
             if is_clause_pattern_node(node):
                 records.extend(extract_clause_pairs(node, valid_names, source_file, verse, hit_counter))
+                # Pattern 2 Neg-Np/Np-Neg (verbless ADV + S/P); separate
+                # from extract_clause_pairs so Neg-V / Neg-Adjp are untouched.
+                records.extend(extract_neg_np_clause_pairs(node, valid_names, source_file, verse, hit_counter))
                 records.extend(extract_clause_full(node, source_file, verse, hit_counter))  # Feature 1
             else:
                 records.extend(extract_direct_match(node, norm_map, source_file, verse, hit_counter))
                 records.extend(extract_coordination(node, norm_map, source_file, verse, hit_counter))
                 records.extend(extract_coordination_full(node, source_file, verse, hit_counter))  # Feature 2
+                # Pattern 1 Neg-Np/Np-Neg (NP/PP constituent negation).
+                records.extend(extract_neg_np_constituent(node, valid_names, source_file, verse, hit_counter))
 
         records.extend(extract_v_io(sentence, parent_map, valid_names, source_file, verse, hit_counter))
 
@@ -1174,7 +1319,8 @@ ABSENT_IN_SAMPLE_HINT = {
     'VC-ADV': 'Needs copula haya (Strong 1961) sibling to an ADV role',
     'PrepVC': 'Needs a PP role appearing before copula V',
     'Neg-Adjp': 'Needs a negator ADV sibling to an adjectival P (Adjp2P)',
-    'Neg-Np': 'Needs a negator ADV directly preceding a plain nominal S/O/P sibling',
+    'Neg-Np': 'Needs Pattern 1 (NP/PP: negator terminal immediately before noun/pronoun) or Pattern 2 (verbless CL: ADV negator immediately before noun/pronoun S/P)',
+    'Np-Neg': 'Needs Pattern 1/2 reverse order (noun/pronoun immediately before negator)',
 }
 
 

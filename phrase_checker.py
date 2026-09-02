@@ -22,11 +22,19 @@ New in this pass, on top of the original three mechanisms below:
     lo/al/bilti/eyn/Aramaic la/bal/beli): an ADV-V pairing where the
     adverb is one of these is now correctly labelled Neg-V rather than
     generic ADV-V, mirroring the user's original notice. Neg-Adjp
-    (negator + adjectival predicate) is handled the same way. Neg-Np /
-    Np-Neg follow a two-pattern rule: (1) phrase-level direct noun/
-    pronoun negation under NP/PP parents with terminal-index adjacency;
-    (2) verbless/nominal clause ADV + S/P (or reverse) with noun/pronoun
-    head and terminal-index adjacency. No generic Neg-X/X-Neg fallback.
+    (negator + adjectival predicate) is handled the same way. No generic
+    Neg-X/X-Neg fallback.
+  - Neg-Np / Np-Neg (UPDATED): no longer phrase_checker's own two-
+    pattern, terminal-adjacency-only logic. This phrase type now runs
+    the SAME extraction engine as the standalone noun_negation_
+    extractor_v6.py script -- full Head-attribute/apposition-aware head
+    resolution, word-order-agnostic clause-pattern matching, the S1.4a
+    substantive-adjective/participle override, and the S1.4d ADV-PP
+    categorical exclusion -- covering both NP-level (AdvpNp -> Neg-Np,
+    NpAdvp -> Np-Neg) and CL-level (ADV-S, ADV-O, ADV-S-PP, ADV-O-PP,
+    ADV-S-P, ADV-S-P-PP, ADV-P) negation. See the "Neg-Np / Np-Neg
+    extraction" section further down (functions prefixed `nnx_`) for
+    the full port and what changed vs. the old logic.
   - Copula detection (Strong's 1961, haya "to be"): S-V/V-S, VerbPrep/
     PrepVerb pairings involving this verb are now labelled with the more
     specific VC-S/S-VC/VCPrep/PrepVC/VC-ADV. (VC-P/P-VC never fire because
@@ -494,9 +502,11 @@ def role_candidates(cat, node, head):
     Falls back to the plain role/Cat itself last.
 
     NOTE: Neg-Np / Np-Neg are NOT produced via a generic 'Np' candidate
-    here. They are handled by the dedicated two-pattern extractors
-    (extract_neg_np_clause_pairs / extract_neg_np_constituent) so that
-    Neg-V and Neg-Adjp continue to win through this product alone.
+    here. They are handled by the dedicated nnx_extract_cl_patterns() /
+    nnx_extract_np_patterns() engine (ported from
+    noun_negation_extractor_v6.py -- see the "Neg-Np / Np-Neg
+    extraction" section below) so that Neg-V and Neg-Adjp continue to
+    win through this product alone.
     """
     cands = []
     if cat == 'V' and is_copula(head):
@@ -511,187 +521,480 @@ def role_candidates(cat, node, head):
     return cands
 
 
-# Pattern 2 partners for Neg-Np/Np-Neg: only Subject or Predicate.
-# 'V' is Neg-V; adjectival P is Neg-Adjp; 'O' is intentionally excluded.
-NEG_NP_CLAUSE_PARTNER_ROLES = {'S', 'P'}
+# ==========================================================================
+# Neg-Np / Np-Neg extraction -- ported from noun_negation_extractor_v6.py
+# ==========================================================================
+# Per user request, this phrase type no longer uses phrase_checker's own
+# (older, narrower) two-pattern logic. It now runs the SAME extraction
+# engine as the standalone noun_negation_extractor_v6.py script: full
+# Head-attribute/apposition-aware head resolution (spec S0/S0.1),
+# word-order-agnostic clause-pattern matching (canonical_cl_pattern()),
+# the S1.4a substantive-adjective/participle override, and the S1.4d
+# ADV-PP categorical exclusion. See noun_negation_extractor_v6.py's own
+# module docstring for the full derivation history of each of these.
+#
+# Functions below are direct ports and are prefixed `nnx_` (noun-negation-
+# extractor) so they read as a distinct, traceable unit and don't collide
+# with phrase_checker's own (differently-scoped) helpers of similar name
+# (e.g. phrase_checker's is_negator() checks a Strong's-number allow-list
+# and is used for Neg-V/Neg-Adjp; the ported nnx_has_negative_particle()
+# checks the type='negative' attribute instead -- the authoritative
+# negation signal per noun_negation_extractor_v6.py -- and is used only
+# for Neg-Np/Np-Neg, exactly as in that script).
+#
+# WHAT CHANGED vs phrase_checker's OLD Neg-Np/Np-Neg logic:
+#   - OLD: two hand-rolled patterns (extract_neg_np_constituent /
+#     extract_neg_np_clause_pairs, now removed) requiring literal
+#     terminal-index adjacency (n / n+1) between the negator and a
+#     noun/pronoun -- one for NP/PP constituents, one for verbless-clause
+#     ADV+S/P siblings -- using only plain_head()/first_m_in_subtree(),
+#     with no apposition handling and no substantive-adjective override.
+#   - NEW: the full noun_negation_extractor_v6.py engine --
+#       NP-level:  Rule=AdvpNp -> Neg-Np, Rule=NpAdvp -> Np-Neg (type=
+#                  'negative' filter + noun/pronoun-anywhere-inside
+#                  filter, same as v6's extract_np_patterns()).
+#       CL-level:  ADV-S, ADV-O, ADV-S-PP, ADV-O-PP, ADV-S-P (and
+#                  ADV-S-P-PP), ADV-P -- matched by the SET of a clause's
+#                  direct-child Cats (word-order-agnostic), not by
+#                  Rule-string equality, with full resolve_head() /
+#                  resolve_apposition() / classify_predicate() logic
+#                  (construct-chain substantive override included).
+#                  ADV-PP is a *categorical exclusion* (spec S1.4d) and
+#                  never produces a Neg-Np/Np-Neg row, regardless of
+#                  what noun sits inside the PP.
+#   - Strict n/n+1 adjacency is no longer required: a match now only
+#     needs to be one of v6's own validated constructions (already
+#     confirmed against the full 930-file corpus in that script). Verse
+#     word order (negator before vs. after its target's resolved head)
+#     is used only to choose the "Neg-Np" (negator-first) vs "Np-Neg"
+#     (noun-first) label -- mirroring AdvpNp -> Neg-Np / NpAdvp -> Np-Neg
+#     at the CL level too, instead of always assuming negator-first.
+# ==========================================================================
 
-# Pattern 1 parents: phrase nodes that can host direct noun/pronoun negation.
-NEG_NP_PHRASE_PARENT_CATS = {'np', 'NP', 'pp', 'PP'}
+nnx_NP_PATTERN_NAMES = {'AdvpNp', 'NpAdvp'}
+
+nnx_NOUN_LIKE_POS = {'noun', 'pronoun'}
+# ^ resolve_simple()'s bare S/O test only (spec S1.1/S1.2/S1.5/S1.6).
+#   classify_predicate()'s P-equative test does NOT use this -- it checks
+#   pos == 'noun' specifically (a bare-pronoun P is 'anaphoric_pronoun_
+#   only', not equative -- verified in v6 against JER 14:22).
+nnx_COPULAR_ADJ_POS = {'adjective'}
+nnx_COPULAR_ADV_POS = {'adverb'}
+
+nnx_CONSTRUCT_CHAIN_RULE = 'NPofNP'
+# ^ spec S1.4a: the construct/genitive-chain wrapper whose Head=0 member
+#   can be a substantive adjective/participle ("slain-of-X").
+
+nnx_NPINF_RULE = 'NpInf'
+# ^ spec S1.3: idiomatic temporal-copular NpInf noun ("[not] the time
+#   when..."), excluded even though it mechanically resolves to a noun.
+
+nnx_CL_PATTERN_CONSTITUENT_SETS = {
+    frozenset({'ADV', 'S'}): 'ADV-S',
+    frozenset({'ADV', 'O'}): 'ADV-O',
+    frozenset({'ADV', 'S', 'P'}): 'ADV-S-P',
+    frozenset({'ADV', 'S', 'PP'}): 'ADV-S-PP',
+    frozenset({'ADV', 'O', 'PP'}): 'ADV-O-PP',
+    frozenset({'ADV', 'S', 'P', 'PP'}): 'ADV-S-P-PP',
+    frozenset({'ADV', 'P'}): 'ADV-P',
+    frozenset({'ADV', 'PP'}): 'ADV-PP',  # spec S1.4d: categorical exclusion
+}
 
 
-def is_noun_or_pronoun(head):
-    """True when head POS is noun or pronoun (Pattern 1/2 nominal target)."""
-    if not head:
+def nnx_canonical_cl_pattern(rule):
+    """Map a Cat='CL' Rule string to a canonical pattern label by the SET
+    of its dash-joined parts (word-order-agnostic), not by exact string
+    match -- so 'S-ADV-P', 'ADV-P-S', 'P-ADV-S', ... all canonicalize to
+    the same 'ADV-S-P' as 'ADV-S-P' itself. Returns (canonical, ambiguous);
+    ambiguous=True when some Cat repeats (e.g. two ADV siblings), which is
+    intentionally NOT resolved automatically (see noun_negation_extractor_
+    v6.py's canonical_cl_pattern() docstring)."""
+    parts = rule.split('-') if rule else []
+    if not parts:
+        return None, False
+    pset = frozenset(parts)
+    ambiguous = len(parts) != len(pset)
+    return nnx_CL_PATTERN_CONSTITUENT_SETS.get(pset), ambiguous
+
+
+def nnx_direct_children_by_cat(node):
+    """Map of Cat -> first matching direct <Node> child."""
+    out = {}
+    for child in list(node):
+        if child.tag == 'Node':
+            cat = child.attrib.get('Cat', '')
+            if cat and cat not in out:
+                out[cat] = child
+    return out
+
+
+def nnx_has_negative_particle(node):
+    """True if any <m> leaf under node (or node itself) has type='negative'.
+    This is the authoritative negation signal (not a Strong's-number
+    list) -- deliberately a descendant search, since ADV can wrap the
+    negator through several advp/adv layers with no competing embedded-
+    clause boundary the way S/O/P have."""
+    if node is None:
         return False
-    return (head.get('pos') or '').lower() in ('noun', 'pronoun')
+    for morph in node.iter('m'):
+        if morph.attrib.get('type') == 'negative':
+            return True
+    return False
 
 
-def is_verbless_clause_pattern_node(node):
-    """Clause-pattern node with no V among direct children (nominal/verbless)."""
-    try:
-        if not is_clause_pattern_node(node):
-            return False
-        children = [c for c in list(node) if c.tag == 'Node']
-        return all(c.attrib.get('Cat') != 'V' for c in children)
-    except Exception:
+def nnx_has_noun_or_pronoun(node):
+    """True if any <m> leaf under node has pos in {noun, pronoun}. Used
+    only for the NP-level (AdvpNp/NpAdvp) match test -- a blanket
+    descendant search is fine there since these are single flat NPs, not
+    clauses that can nest a whole competing embedded clause."""
+    if node is None:
         return False
+    for morph in node.iter('m'):
+        if morph.attrib.get('pos') in ('noun', 'pronoun'):
+            return True
+    return False
 
 
-def _safe_word_position(head):
-    """Verse-terminal index from a head dict; None on any missing/malformed value."""
-    try:
-        vi = (head or {}).get('verse_index', '')
-        m = re.search(r'!(\d+)$', vi)
-        return int(m.group(1)) if m else None
-    except Exception:
-        return None
-
-
-def _neg_word_from_child(child):
-    """Negative particle word for a phrase child, or None."""
-    try:
-        head = plain_head(child)
-        if head and is_negator(head):
-            return head
-        first = first_m_in_subtree(child)
-        if first and is_negator(first):
-            return first
-    except Exception:
-        return None
+def _nnx_leaf_m_child(current):
+    """The lexical leaf directly borne by `current`: a plain <m> child,
+    or (compound-lexeme case, e.g. 2SA 11:3's Bathsheba) the <m> inside a
+    <c> wrapper. Never descends into a nested <Node>."""
+    m = current.find('m')
+    if m is not None:
+        return m
+    c = current.find('c')
+    if c is not None:
+        return c.find('m')
     return None
 
 
-def _nominal_word_from_child(child):
-    """Return (head_for_record, first_terminal_for_adjacency) when child is
-    noun/pronoun-headed (or a noun/pronoun terminal); else None."""
-    try:
-        first = first_m_in_subtree(child)
-        head = plain_head(child)
-        if head and is_noun_or_pronoun(head):
-            return head, (first or head)
-        if first and is_noun_or_pronoun(first):
-            return first, first
-    except Exception:
+def _nnx_is_apposition_node(node):
+    """Spec S0.1 (v5-narrowed): trigger apposition-aware resolution only
+    on the literal Rule='Np-Appos' marker -- NOT on every node with >1
+    np-Cat child, since that also fires on ordinary NPofNP construct
+    chains and coordination/quantifier wrappers (verified corpus-wide in
+    noun_negation_extractor_v6.py; see that file's THE V5 FIX #1)."""
+    return node is not None and node.attrib.get('Rule', '') == 'Np-Appos'
+
+
+def nnx_resolve_head(node, max_depth=40):
+    """Walk a constituent node (S, O, P, PP, ...) down through its wrapper
+    Rule/Head chain to its true lexical head (spec S0), handing off to
+    nnx_resolve_apposition() at any Rule='Np-Appos' node (spec S0.1).
+    Returns {'kind': 'lexical'|'pp'|'none', 'node', 'm', 'pos', 'path_rules'}.
+    See noun_negation_extractor_v6.py's resolve_head() for full rationale."""
+    current = node
+    path_rules = []
+    for _ in range(max_depth):
+        if current is None:
+            break
+        m_child = _nnx_leaf_m_child(current)
+        if m_child is not None:
+            return {'kind': 'lexical', 'node': current, 'm': m_child,
+                    'pos': m_child.attrib.get('pos', ''), 'path_rules': path_rules}
+
+        cat = current.attrib.get('Cat', '')
+        rule = current.attrib.get('Rule', '')
+        if rule:
+            path_rules.append(rule)
+
+        if cat == 'pp':
+            return {'kind': 'pp', 'node': current, 'm': None,
+                    'pos': 'preposition', 'path_rules': path_rules}
+        if cat == 'CL':
+            return {'kind': 'none', 'node': current, 'm': None,
+                    'pos': None, 'path_rules': path_rules}
+
+        if _nnx_is_apposition_node(current):
+            return nnx_resolve_apposition(current, path_rules, max_depth)
+
+        children = [c for c in list(current) if c.tag == 'Node']
+        if not children:
+            return {'kind': 'none', 'node': current, 'm': None,
+                    'pos': None, 'path_rules': path_rules}
+
+        head_attr = current.attrib.get('Head', '')
+        if not head_attr.lstrip('-').isdigit():
+            return {'kind': 'none', 'node': current, 'm': None,
+                    'pos': None, 'path_rules': path_rules}
+        idx = int(head_attr)
+        if not (0 <= idx < len(children)):
+            return {'kind': 'none', 'node': current, 'm': None,
+                    'pos': None, 'path_rules': path_rules}
+        current = children[idx]
+
+    return {'kind': 'none', 'node': current, 'm': None, 'pos': None,
+            'path_rules': path_rules}
+
+
+def nnx_resolve_apposition(node, path_rules_so_far, max_depth):
+    """Spec S0.1: resolve EVERY direct child of an Np-Appos node (not just
+    the Head-indexed one), preferring a sibling that bottoms out at
+    pos='noun', else pos='pronoun', else 'no lexical noun head' -- and
+    never crossing a Cat='CL' boundary to keep hunting. See
+    noun_negation_extractor_v6.py's resolve_apposition() (verified live
+    against DAN 4:27, ISA 51:9, ISA 51:10)."""
+    children = [c for c in list(node) if c.tag == 'Node']
+    branch_results = []
+    for child in children:
+        res = dict(nnx_resolve_head(child, max_depth=max_depth))
+        res['path_rules'] = path_rules_so_far + res.get('path_rules', [])
+        branch_results.append(res)
+
+    for res in branch_results:
+        if res['kind'] == 'lexical' and res['pos'] == 'noun':
+            return res
+    for res in branch_results:
+        if res['kind'] == 'lexical' and res['pos'] == 'pronoun':
+            return res
+    return {'kind': 'none', 'node': node, 'm': None, 'pos': None,
+            'path_rules': path_rules_so_far}
+
+
+def _nnx_is_participle_m(m):
+    if m is None:
+        return False
+    return 'participle' in (m.attrib.get('type', '') or '').lower()
+
+
+def nnx_substantive_override(res):
+    """Spec S1.4a: a resolved adjective/participle head is a noun-
+    equivalent (not a standalone copular predicate) when it's the
+    construct-state member of an NPofNP chain ("slain-of-the-sword",
+    "my good"). See noun_negation_extractor_v6.py's
+    _substantive_override()."""
+    if res is None or res.get('kind') != 'lexical':
+        return False
+    pos = res.get('pos')
+    is_adjective = pos == 'adjective'
+    is_participle = pos == 'verb' and _nnx_is_participle_m(res.get('m'))
+    if not (is_adjective or is_participle):
+        return False
+    return nnx_CONSTRUCT_CHAIN_RULE in res.get('path_rules', [])
+
+
+def nnx_resolve_simple(constituent_node):
+    """spec S1.1/S1.2/S1.5/S1.6 (and S1.4a's PSA 16:2 locative-S case):
+    included iff the resolved head is noun/pronoun, or a construct-
+    embedded substantive adjective/participle (S1.4a). Returns
+    (included: bool, head_result: dict)."""
+    if constituent_node is None:
+        return False, {'kind': 'none', 'node': None, 'm': None, 'pos': None, 'path_rules': []}
+    res = nnx_resolve_head(constituent_node)
+    included = (res['kind'] == 'lexical' and res['pos'] in nnx_NOUN_LIKE_POS) or nnx_substantive_override(res)
+    return included, res
+
+
+def nnx_classify_predicate(p_node):
+    """Six/seven-way classification of a P constituent for ADV-P / ADV-S-P
+    / ADV-S-P-PP (spec S1.3/S1.4/S1.7, plus S1.4a's substantive override).
+    Returns (clause_type, include, use_target, head_result). See
+    noun_negation_extractor_v6.py's classify_predicate() for the full
+    per-branch rationale (NpInf idiom, Pp2P locative-existential,
+    pos='pronoun' -> anaphoric exclusion per JER 14:22, ...)."""
+    if p_node is None:
+        return ('no_predicate', False, None, None)
+
+    res = nnx_resolve_head(p_node)
+
+    if nnx_NPINF_RULE in res['path_rules']:
+        return ('temporal_copular_idiom_unverified', False, None, res)
+    if res['kind'] == 'pp':
+        return ('locative_existential', True, 'S', res)
+    if res['kind'] == 'none':
+        return ('anaphoric_no_head_noun', False, None, res)
+
+    pos = res['pos']
+    if pos in nnx_COPULAR_ADJ_POS:
+        if nnx_substantive_override(res):
+            return ('equative_predicate_nominal', True, 'P', res)
+        return ('copular_adjective', False, None, res)
+    if pos in nnx_COPULAR_ADV_POS:
+        return ('copular_adverb', False, None, res)
+    if pos == 'noun':
+        return ('equative_predicate_nominal', True, 'P', res)
+    if pos == 'pronoun':
+        return ('anaphoric_pronoun_only', False, None, res)
+    if pos == 'verb':
+        if _nnx_is_participle_m(res.get('m')):
+            if nnx_substantive_override(res):
+                return ('equative_predicate_nominal', True, 'P', res)
+            return ('copular_verbal', False, None, res)
+        return ('unclassified_pos_verb_non_participle', False, None, res)
+    return (f"unclassified_pos_{pos or 'unknown'}", False, None, res)
+
+
+def _nnx_negator_heads(adv_node):
+    """All type='negative' <m> leaves under adv_node, converted to
+    phrase_checker's own head-word dict shape via node_word_info() (so
+    Neg-Np/Np-Neg records get the exact same StrongIDs/Words/Gloss/
+    MaculaID/VerseIndex columns as every other phrase type). Deliberately
+    independent of phrase_checker's Strong's-number-based is_negator():
+    the type='negative' attribute is the authoritative signal (see
+    LEV 11:4's אַ֤ךְ, type='affirmation', in the module docstring)."""
+    heads = []
+    for term_node in adv_node.iter('Node'):
+        m = term_node.find('m')
+        if m is None:
+            c = term_node.find('c')
+            m = c.find('m') if c is not None else None
+        if m is not None and m.attrib.get('type') == 'negative':
+            heads.append(node_word_info(m, term_node))
+    return heads
+
+
+def _nnx_head_dict_from_resolved(res):
+    """Convert an nnx_resolve_head()/nnx_classify_predicate() 'lexical'
+    result into phrase_checker's head-word dict shape via node_word_info()."""
+    if not res or res.get('kind') != 'lexical':
         return None
+    m, term_node = res.get('m'), res.get('node')
+    if m is None or term_node is None:
+        return None
+    return node_word_info(m, term_node)
+
+
+def _nnx_order_pair(neg_head, target_head, valid_names):
+    """Order a (negator, target) pair by verse position: negator-before-
+    target -> Neg-Np, target-before-negator -> Np-Neg -- mirroring
+    AdvpNp -> Neg-Np / NpAdvp -> Np-Neg at the CL level too, where the
+    Rule string's word order isn't fixed. Falls back to Neg-Np (Biblical
+    Hebrew's normal preposed-negator order) if a position can't be
+    parsed on either side, rather than silently dropping a real v6 match."""
+    neg_pos = _word_position(neg_head)
+    tgt_pos = _word_position(target_head)
+    if neg_pos is not None and tgt_pos is not None and neg_pos != tgt_pos:
+        if neg_pos < tgt_pos and 'Neg-Np' in valid_names:
+            return 'Neg-Np', neg_head, target_head
+        if tgt_pos < neg_pos and 'Np-Neg' in valid_names:
+            return 'Np-Neg', target_head, neg_head
+        return None
+    if 'Neg-Np' in valid_names:
+        return 'Neg-Np', neg_head, target_head
     return None
 
 
-def match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names):
-    """If neg and nominal are terminal-adjacent, return
-    (phrase_type, head_a, head_b) ordered to match the label; else None."""
-    if not (neg_head and nominal_head and nominal_first):
-        return None
-    neg_pos = _safe_word_position(neg_head)
-    nom_pos = _safe_word_position(nominal_first)
-    if neg_pos is None or nom_pos is None:
-        return None
-    if nom_pos == neg_pos + 1 and 'Neg-Np' in valid_names:
-        return 'Neg-Np', neg_head, nominal_head
-    if neg_pos == nom_pos + 1 and 'Np-Neg' in valid_names:
-        return 'Np-Neg', nominal_head, neg_head
-    return None
-
-
-def extract_neg_np_constituent(node, valid_names, source_file, verse, hit_counter):
-    """Pattern 1: Non-clausal/constituent Neg-Np/Np-Neg.
-
-    Parent: phrase node (NP or PP).
-    One direct child hosts a negative particle; another hosts a noun or
-    pronoun (terminal or sibling constituent). Emit when their terminal
-    indices are immediately adjacent (n / n+1), labelled by text order.
-    """
+def nnx_extract_np_patterns(node, valid_names, source_file, verse, hit_counter):
+    """Port of noun_negation_extractor_v6.py's extract_np_patterns():
+    Rule='AdvpNp' -> Neg-Np, Rule='NpAdvp' -> Np-Neg. Mandatory
+    type='negative' filter on the advp child (not a Strong's-number
+    match) plus a noun/pronoun-anywhere-inside filter on the np child."""
     records = []
-    try:
-        if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
-            return records
-        cat = node.attrib.get('Cat', '')
-        if cat not in NEG_NP_PHRASE_PARENT_CATS:
-            return records
-        children = [c for c in list(node) if c.tag == 'Node']
-        if len(children) < 2:
-            return records
-        node_id = node.attrib.get('nodeId', '')
-        seen = set()
-        for i, child_a in enumerate(children):
-            for j, child_b in enumerate(children):
-                if i == j:
-                    continue
-                neg_head = _neg_word_from_child(child_a)
-                nominal = _nominal_word_from_child(child_b)
-                if not (neg_head and nominal):
-                    continue
-                nominal_head, nominal_first = nominal
-                matched = match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names)
-                if not matched:
-                    continue
-                name, head_left, head_right = matched
-                dedupe = (name, neg_head.get('macula', ''), nominal_head.get('macula', ''))
-                if dedupe in seen:
-                    continue
-                seen.add(dedupe)
-                records.append(make_record(name, node_id, head_left, head_right, source_file, verse))
-                hit_counter[f"[neg-np-p1] {node.attrib.get('Rule', '')}"] += 1
-    except Exception:
-        # Malformed subtree must not abort the rest of extraction.
+    if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
         return records
+    rule = node.attrib.get('Rule', '')
+    if rule not in nnx_NP_PATTERN_NAMES:
+        return records
+    constituents = nnx_direct_children_by_cat(node)
+    advp = constituents.get('advp')
+    np_child = constituents.get('np')
+    if advp is None or np_child is None:
+        return records
+    neg_heads = _nnx_negator_heads(advp)
+    if not neg_heads:
+        return records  # e.g. LEV 11:4 אַ֤ךְ (type='affirmation') is excluded here
+    if not nnx_has_noun_or_pronoun(np_child):
+        return records
+
+    phrase_type = 'Neg-Np' if rule == 'AdvpNp' else 'Np-Neg'
+    if phrase_type not in valid_names:
+        return records
+    # Head-word resolution (phrase_checker convention: follow Head, fall
+    # back to first terminal) -- v6 itself doesn't need a single NP head
+    # word since its CSV reports the whole phrase's surface text, but
+    # phrase_checker's record shape needs one head word per side.
+    target_head = plain_head(np_child) or first_m_in_subtree(np_child)
+    if not target_head:
+        return records
+    node_id = node.attrib.get('nodeId', '')
+    for neg_head in neg_heads:
+        head_left, head_right = (neg_head, target_head) if phrase_type == 'Neg-Np' else (target_head, neg_head)
+        records.append(make_record(phrase_type, node_id, head_left, head_right, source_file, verse))
+        hit_counter[f'[nnx-np] {rule}'] += 1
     return records
 
 
-def extract_neg_np_clause_pairs(node, valid_names, source_file, verse, hit_counter):
-    """Pattern 2: Clausal predicate Neg-Np/Np-Neg on verbless/nominal clauses.
-
-    Parent: clause-pattern node with no V role.
-    One child Cat=ADV headed by a negative particle; the other Cat=S or P
-    with a noun/pronoun head. Terminal index of the first word of the
-    S/P child must immediately follow (or precede, for Np-Neg) the
-    negative word.
-    """
+def nnx_extract_cl_patterns(node, valid_names, source_file, verse, hit_counter):
+    """Port of noun_negation_extractor_v6.py's extract_cl_patterns() +
+    canonical_cl_pattern()/classify_predicate()/resolve_simple() head-
+    resolution engine, emitting Neg-Np/Np-Neg phrase_checker records.
+    Runs on every Cat='CL' node (matching v6's own traversal), whether
+    or not that node also satisfies phrase_checker's own stricter,
+    order-sensitive is_clause_pattern_node() check -- canonical_cl_
+    pattern() is already word-order-agnostic and doesn't need that."""
     records = []
-    try:
-        if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
-            return records
-        if not is_verbless_clause_pattern_node(node):
-            return records
-        children = [c for c in list(node) if c.tag == 'Node']
-        roles = [(c.attrib.get('Cat'), c) for c in children]
-        node_id = node.attrib.get('nodeId', '')
-        seen = set()
-        for i, (cat_a, node_a) in enumerate(roles):
-            for j, (cat_b, node_b) in enumerate(roles):
-                if i == j:
-                    continue
-                # ADV + (S|P), either child order
-                if cat_a == 'ADV' and cat_b in NEG_NP_CLAUSE_PARTNER_ROLES:
-                    adv_node, nom_node, nom_cat = node_a, node_b, cat_b
-                elif cat_b == 'ADV' and cat_a in NEG_NP_CLAUSE_PARTNER_ROLES:
-                    adv_node, nom_node, nom_cat = node_b, node_a, cat_a
-                else:
-                    continue
-                neg_head = plain_head(adv_node)
-                if not (neg_head and is_negator(neg_head)):
-                    continue
-                # Adjectival P is Neg-Adjp, not Neg-Np.
-                if nom_cat == 'P':
-                    nom_children = [c for c in list(nom_node) if c.tag == 'Node']
-                    if nom_children and nom_children[0].attrib.get('Cat') == 'adjp':
-                        continue
-                nominal_head = plain_head(nom_node)
-                if not is_noun_or_pronoun(nominal_head):
-                    continue
-                nominal_first = first_m_in_subtree(nom_node) or nominal_head
-                matched = match_neg_np_pair(neg_head, nominal_head, nominal_first, valid_names)
-                if not matched:
-                    continue
-                name, head_left, head_right = matched
-                dedupe = (name, neg_head.get('macula', ''), nominal_head.get('macula', ''))
-                if dedupe in seen:
-                    continue
-                seen.add(dedupe)
-                records.append(make_record(name, node_id, head_left, head_right, source_file, verse))
-                hit_counter[f"[neg-np-p2] {node.attrib.get('Rule', '')}"] += 1
-    except Exception:
+    if 'Neg-Np' not in valid_names and 'Np-Neg' not in valid_names:
         return records
+    if node.attrib.get('Cat') != 'CL':
+        return records
+
+    rule = node.attrib.get('Rule', '')
+    canonical_rule, ambiguous = nnx_canonical_cl_pattern(rule)
+    if canonical_rule is None or ambiguous:
+        return records
+    if canonical_rule == 'ADV-PP':
+        # spec S1.4d: categorical exclusion -- a bare negated PP with no
+        # S/O/P predication is never a Neg-Np/Np-Neg match, regardless
+        # of whether the PP's own object resolves to a noun.
+        return records
+
+    constituents = nnx_direct_children_by_cat(node)
+    adv = constituents.get('ADV')
+    s_node = constituents.get('S')
+    o_node = constituents.get('O')
+    p_node = constituents.get('P')
+
+    if adv is None or not nnx_has_negative_particle(adv):
+        return records
+    neg_heads = _nnx_negator_heads(adv)
+    if not neg_heads:
+        return records
+    node_id = node.attrib.get('nodeId', '')
+
+    def emit(target_head):
+        if target_head is None:
+            return
+        for neg_head in neg_heads:
+            matched = _nnx_order_pair(neg_head, target_head, valid_names)
+            if not matched:
+                continue
+            name, head_left, head_right = matched
+            records.append(make_record(name, node_id, head_left, head_right, source_file, verse))
+            hit_counter[f'[nnx-cl] {canonical_rule}'] += 1
+
+    if canonical_rule in ('ADV-S', 'ADV-S-PP'):
+        included, res = nnx_resolve_simple(s_node)
+        if included:
+            emit(_nnx_head_dict_from_resolved(res))
+
+    elif canonical_rule in ('ADV-O', 'ADV-O-PP'):
+        included, res = nnx_resolve_simple(o_node)
+        if included:
+            emit(_nnx_head_dict_from_resolved(res))
+
+    elif canonical_rule in ('ADV-S-P', 'ADV-S-P-PP'):
+        clause_type, include, use_target, res = nnx_classify_predicate(p_node)
+        if include and use_target == 'P':
+            emit(_nnx_head_dict_from_resolved(res))
+        elif include and use_target == 'S':
+            # locative_existential (Pp2P predicate): S is primary, but
+            # (spec S1.4a / PSA 16:2) must still be run through the same
+            # substantive-override-aware resolve_simple() before being
+            # reported, not just checked for "is not None".
+            if s_node is not None:
+                s_included, s_res = nnx_resolve_simple(s_node)
+                if s_included:
+                    emit(_nnx_head_dict_from_resolved(s_res))
+
+    elif canonical_rule == 'ADV-P':
+        clause_type, include, use_target, res = nnx_classify_predicate(p_node)
+        if include and use_target == 'P':
+            emit(_nnx_head_dict_from_resolved(res))
+        # use_target == 'S': bare ADV-P has no S by definition -- nothing
+        # to attribute to (matches v6's own log_exclusion here).
+
     return records
+
 
 
 def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
@@ -703,8 +1006,9 @@ def extract_clause_pairs(node, valid_names, source_file, verse, hit_counter):
 
     Negation: 'Neg-V' and 'Neg-Adjp' fall out of the cands_a x cands_b
     product via role_candidates(). 'Neg-Np' / 'Np-Neg' are NOT handled
-    here -- see extract_neg_np_clause_pairs (Pattern 2) so verbal clauses
-    and O-partners cannot leak into Neg-Np.
+    here -- see nnx_extract_cl_patterns() (the ported
+    noun_negation_extractor_v6.py engine) so verbal clauses and
+    O-partners cannot leak into Neg-Np.
     """
     records = []
     children = [c for c in list(node) if c.tag == 'Node']
@@ -1229,18 +1533,26 @@ def process_file(xml_path, valid_names, norm_map, hit_counter, rule_seen_counter
             rule = node.attrib.get('Rule')
             if rule:
                 rule_seen_counter[rule] += 1
+
+            # Neg-Np / Np-Neg: ported wholesale from
+            # noun_negation_extractor_v6.py (see the "Neg-Np / Np-Neg
+            # extraction" section above). Runs on every Cat='CL' or
+            # Cat='np' node, exactly like that script's own traverse_nodes()
+            # -- independent of is_clause_pattern_node(), since v6's own
+            # clause matching is word-order-agnostic and doesn't need it.
+            cat = node.attrib.get('Cat', '')
+            if cat == 'CL':
+                records.extend(nnx_extract_cl_patterns(node, valid_names, source_file, verse, hit_counter))
+            elif cat == 'np':
+                records.extend(nnx_extract_np_patterns(node, valid_names, source_file, verse, hit_counter))
+
             if is_clause_pattern_node(node):
                 records.extend(extract_clause_pairs(node, valid_names, source_file, verse, hit_counter))
-                # Pattern 2 Neg-Np/Np-Neg (verbless ADV + S/P); separate
-                # from extract_clause_pairs so Neg-V / Neg-Adjp are untouched.
-                records.extend(extract_neg_np_clause_pairs(node, valid_names, source_file, verse, hit_counter))
                 records.extend(extract_clause_full(node, source_file, verse, hit_counter))  # Feature 1
             else:
                 records.extend(extract_direct_match(node, norm_map, source_file, verse, hit_counter))
                 records.extend(extract_coordination(node, norm_map, source_file, verse, hit_counter))
                 records.extend(extract_coordination_full(node, source_file, verse, hit_counter))  # Feature 2
-                # Pattern 1 Neg-Np/Np-Neg (NP/PP constituent negation).
-                records.extend(extract_neg_np_constituent(node, valid_names, source_file, verse, hit_counter))
 
         records.extend(extract_v_io(sentence, parent_map, valid_names, source_file, verse, hit_counter))
 
@@ -1319,8 +1631,8 @@ ABSENT_IN_SAMPLE_HINT = {
     'VC-ADV': 'Needs copula haya (Strong 1961) sibling to an ADV role',
     'PrepVC': 'Needs a PP role appearing before copula V',
     'Neg-Adjp': 'Needs a negator ADV sibling to an adjectival P (Adjp2P)',
-    'Neg-Np': 'Needs Pattern 1 (NP/PP: negator terminal immediately before noun/pronoun) or Pattern 2 (verbless CL: ADV negator immediately before noun/pronoun S/P)',
-    'Np-Neg': 'Needs Pattern 1/2 reverse order (noun/pronoun immediately before negator)',
+    'Neg-Np': 'Needs the ported noun_negation_extractor_v6.py engine to find a match (AdvpNp/NpAdvp, or ADV-S/ADV-O/ADV-S-P/ADV-S-PP/ADV-O-PP/ADV-S-P-PP/ADV-P with negator before the resolved noun/pronoun head)',
+    'Np-Neg': 'Same engine as Neg-Np, reverse order (resolved noun/pronoun head before the negator)',
 }
 
 
